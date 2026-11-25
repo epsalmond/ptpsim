@@ -284,13 +284,11 @@ fixed queue head. A head completes only after the full data phase and its final
 OK response arrive; neither socket close nor a transport sentinel is a
 queue-completion signal.
 
-The trigger is descriptive data, not a simulated Bluetooth peripheral. The
-current service exposes the PTP pull queue seeded from its media inputs; a
-consumer or test fixture supplies BLE/app-state transitions by patching
-`camera_initiated_transfer_active` through the generic state-overlay control
-surface. Reserved routing is disabled until that state is true, so an ordinary
-count read cannot redirect public object lookup. A generic BLE adapter remains
-tracked by issue #164.
+The service seeds the PTP pull queue from its media inputs. Set
+`camera_initiated_transfer_active` through the generic state overlay to activate
+reserved routing. An ordinary count read before activation cannot redirect
+public object lookup. The optional BLE socket can serve the manifest's baseline
+and trigger values with the [wake and transfer scenario](TRANSPORTS.md#scenario-ptpsim-ble-scenariov1).
 
 ## 6. Status: what's ready vs pending
 

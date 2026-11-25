@@ -261,8 +261,9 @@ unless `--ble-allow-non-loopback` is also given.
 
 The server handles one request at a time per connection. After it writes a
 response it pushes the events that request made eligible, then reads the next
-request. Every `advert`, `notification` and `disconnected` follows the response
-to the request that produced it. Notification fencing depends on this order.
+request. Request-driven events follow the response to the request that
+produced them. Notification fencing depends on this order. An active transfer
+scenario can also push notifications in response to a control-state change.
 
 #### Connection lifecycle
 
@@ -358,7 +359,8 @@ Events:
 
 - `advert`: `{"event":"advert","peripheral":"<uuid>","service_uuids":[...],"manufacturer_data":"<hex>","local_name":null,"service_data":{},"tx_power":null}`.
   `manufacturer_data` is the raw advertised field: the 2-byte little-endian
-  company ID, then the payload.
+  company ID, then the payload. An absent manufacturer field is `""`.
+  `local_name` is a string when the scenario supplies it.
 - `notification`: `{"event":"notification","uuid":"...","value":"<hex>"}`.
 - `disconnected`: `{"event":"disconnected","peripheral":"<uuid>"}`. The
   event immediately follows the successful response to the request that
@@ -414,7 +416,9 @@ peripheralName: null               # optional
 arming: { prep: imageTransferSetting, launch: functionLaunchRequest, deviceName: deviceNameString }
 peripherals:
   - id: "<RFC 4122 UUID>"
-    advert: { serviceUuids: ["<uuid>"], manufacturerData: "<hex>" }
+    advert: { serviceUuids: ["<uuid>"], manufacturerData: "<hex>", localName: "<name>" }
+    advertAfterPeerDisconnects:
+      1: { serviceUuids: ["<startup service uuid>"], manufacturerData: "<hex>" }
 reads:
   <gattName>: { hex: "<hex>" }     # or { utf8: "<text>" }
 notifications:
@@ -423,6 +427,7 @@ notifications:
 peerDisconnects:
   - { afterRead: <gattName> }
   - { awaitDisconnect: true }
+cameraInitiatedTransfer: true    # optional, serves the loaded manifest's trigger state
 ```
 
 The catalog served is the model's whole GATT map, with every UUID in
@@ -436,6 +441,26 @@ characteristic or the client's `await_disconnect` request. This ordering
 lets a test script link loss after a baseline read and then exercise a wake
 plan whose next step is to wait for the camera to drop the link.
 
+An optional `advertAfterPeerDisconnects` map selects the advert served after
+the indicated number of completed steps. Without an entry for the current
+count, scans serve the peripheral's base `advert`.
+
+Set `cameraInitiatedTransfer: true` to serve the running manifest's declared
+transfer trigger characteristics. The scenario uses the first baseline and
+trigger value declared for each characteristic. A successful state overlay
+sets which values reads return. A live change also pushes notifications on
+the currently subscribed trigger characteristics. These control-driven
+notifications can arrive between requests and report the latest state.
+Other notifications keep their request ordering. Baseline uses the
+manifest's inactive values, and the trigger uses its separate active values.
+
+`packages/fixtures/ble/gfx100ii-wake-transfer.yaml` scripts a lost baseline
+link, a startup advertisement, and an awake advertisement. After the wake
+plan and reconnect, trigger the manifest's transfer state with
+`camera-simctl state patch --overlay '{"camera_initiated_transfer_active":true}'`.
+Set the same field to `false` to restore baseline. The PTP/IP transfer queue
+is populated from the configured media root.
+
 `packages/fixtures/ble/gfx100ii-pair-handoff.yaml` serves the GFX100 II legacy
 pairing advert, the `ble-pair` plan and the `ble-establish-wifi-ap` handoff.
 Each value carries a comment naming its source: manifest data where the
@@ -445,8 +470,8 @@ signature match in the manifest.
 
 Limits:
 
-- Advert fields are literal scenario values. They are not generated from
-  signature data or connection state.
+- Advert fields are literal scenario values. A scenario can select them by
+  peer-disconnect stage.
 - The responder answers immediately. AP-launch timing is not modeled.
 - Within one connection the prep flag is never cleared, so after a prep write
   every later launch on that connection arms the engine. A new connection

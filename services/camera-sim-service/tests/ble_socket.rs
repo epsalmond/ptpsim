@@ -9,14 +9,14 @@ use std::path::PathBuf;
 
 use camera_config::index::eval::{self, BleAdvertFacts};
 use camera_config::index::{
-    CccdMode, Encoding, FamilyBleBlock, ModelView, ResolvedManufacturerIndex, Signature, Step,
-    StepValue,
+    CccdMode, Encoding, FamilyBleBlock, ModelView, ReconnectDisposition, ResolvedManufacturerIndex,
+    Signature, Step, StepValue,
 };
 use camera_sim::{BleEvent, BleResponder, SharedLink};
 use camera_sim_service::ble_socket::{BleAdvert, BleScenario, BleSocket, SimulatedPeripheral};
 use camera_sim_service::{Config, Server};
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
 use tokio::time::{timeout, Duration};
@@ -80,6 +80,7 @@ fn golden_socket() -> BleSocket {
         advert: BleAdvert {
             service_uuids: vec!["0000FFF0-0000-1000-8000-00805F9B34FB".into()],
             manufacturer_data: vec![0xff, 0xff, 0x01, 0x02],
+            local_name: None,
         },
     };
     BleSocket::new(BleScenario::new(vec![peripheral], 247, None, || {
@@ -276,6 +277,7 @@ fn scenario_with_an_unknown_gatt_name_fails_to_load() {
 
 struct Running {
     ble_addr: SocketAddr,
+    control_addr: SocketAddr,
     link: SharedLink,
     socket: BleSocket,
     shutdown: tokio::sync::oneshot::Sender<()>,
@@ -328,12 +330,14 @@ async fn start_server_with_scenario(scenario: &std::path::Path) -> Running {
         .await
         .expect("BLE socket binds with the committed scenario");
     let ble_addr = server.ble_addr_opt().expect("BLE listener bound");
+    let control_addr = server.control_addr();
     let socket = server.ble_socket().expect("BLE socket handle");
     let link = server.camera_link().await;
     let (shutdown, rx) = tokio::sync::oneshot::channel();
     let run = tokio::spawn(server.run(rx));
     Running {
         ble_addr,
+        control_addr,
         link,
         socket,
         shutdown,
@@ -988,6 +992,129 @@ async fn scripted_peer_disconnect_follows_the_baseline_read_once() {
     running.stop().await;
 }
 
+async fn assert_saved_camera_advert(
+    client: &mut Client,
+    view: &ModelView,
+    expected: ReconnectDisposition,
+) {
+    client.ok("scan_start", json!({})).await;
+    let advert = client.next_message().await.expect("fresh advert");
+    client.ok("scan_stop", json!({})).await;
+    assert_eq!(advert["event"], "advert");
+    assert_eq!(advert["peripheral"], PERIPHERAL);
+    let bytes = unhex(advert["manufacturer_data"].as_str().unwrap());
+    let manufacturer_data = (bytes.len() >= 2).then(|| {
+        (
+            u16::from_le_bytes([bytes[0], bytes[1]]),
+            bytes[2..].to_vec(),
+        )
+    });
+    let facts = BleAdvertFacts {
+        service_uuids: serde_json::from_value(advert["service_uuids"].clone()).unwrap(),
+        manufacturer_data,
+        local_name: advert["local_name"].as_str().map(str::to_string),
+        ..Default::default()
+    };
+    let (signature, route) = view
+        .signatures
+        .iter()
+        .find_map(|(_, sig)| match sig {
+            Signature::BleAdvert(sig) if eval::advert_matches(sig, &facts) => {
+                Some((sig, sig.reconnect.as_ref().expect("saved camera route")))
+            }
+            _ => None,
+        })
+        .expect("manifest signature for staged advert");
+    assert_eq!(route.disposition, expected);
+    let identities: BTreeMap<_, _> = eval::advert_scope(signature, &facts).into_iter().collect();
+    let (key, value) = match expected {
+        ReconnectDisposition::Wake => ("pairingKeyBytes", "44732a80"),
+        ReconnectDisposition::Ready => ("shortSerial", "0001"),
+    };
+    assert_eq!(route.identity, [key]);
+    assert_eq!(identities[key], value);
+}
+
+async fn patch_transfer_state(addr: SocketAddr, active: bool) {
+    let body = json!({"camera_initiated_transfer_active": active}).to_string();
+    let request = format!(
+        "PATCH /state HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len(),
+    );
+    let response = timeout(IO_TIMEOUT, async {
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).await.unwrap();
+        response
+    })
+    .await
+    .unwrap();
+    assert!(response.starts_with("HTTP/1.1 200 "), "{response}");
+}
+
+#[tokio::test]
+async fn wake_and_transfer_fixture_pushes_the_manifest_state_to_the_reconnected_client() {
+    let path = repo("packages/fixtures/ble/gfx100ii-wake-transfer.yaml");
+    let running = start_server_with_scenario(&path).await;
+    let view = gfx100ii();
+    let ble = view.ble.as_ref().unwrap();
+    let ap_state = uuid(ble, "apState");
+    let transfer_state = uuid(ble, "transferState");
+    let disconnected = json!({"event": "disconnected", "peripheral": PERIPHERAL});
+
+    let mut client = Client::connect(running.ble_addr).await;
+    assert_saved_camera_advert(&mut client, &view, ReconnectDisposition::Ready).await;
+    client
+        .ok("connect", json!({"peripheral": PERIPHERAL}))
+        .await;
+    client.ok("discover", json!({})).await;
+    client.ok("subscribe", json!({"uuid": ap_state})).await;
+    let value = client.ok("read", json!({"uuid": ap_state})).await;
+    assert_eq!(value["value"], "0080");
+    assert_eq!(client.next_message().await, Some(disconnected.clone()));
+
+    assert_saved_camera_advert(&mut client, &view, ReconnectDisposition::Wake).await;
+    client
+        .ok("connect", json!({"peripheral": PERIPHERAL}))
+        .await;
+    client.ok("await_disconnect", json!({})).await;
+    assert_eq!(client.next_message().await, Some(disconnected));
+    assert_saved_camera_advert(&mut client, &view, ReconnectDisposition::Ready).await;
+    client
+        .ok("connect", json!({"peripheral": PERIPHERAL}))
+        .await;
+    client.ok("discover", json!({})).await;
+    client.ok("subscribe", json!({"uuid": ap_state})).await;
+
+    patch_transfer_state(running.control_addr, true).await;
+    assert_eq!(
+        client.next_message().await.unwrap(),
+        json!({
+            "event": "notification", "uuid": ap_state, "value": "0380",
+        })
+    );
+    let value = client.ok("read", json!({"uuid": transfer_state})).await;
+    assert_eq!(value["value"], "0180");
+    assert!(client.notifications(&transfer_state).is_empty());
+    client
+        .ok("subscribe", json!({"uuid": transfer_state}))
+        .await;
+
+    patch_transfer_state(running.control_addr, false).await;
+    for uuid in [&ap_state, &transfer_state] {
+        let baseline = json!({"event": "notification", "uuid": uuid, "value": "0080"});
+        assert_eq!(client.next_message().await, Some(baseline));
+    }
+    for uuid in [&ap_state, &transfer_state] {
+        let value = client.ok("read", json!({"uuid": uuid})).await;
+        assert_eq!(value["value"], "0080");
+    }
+    client.ok("disconnect", json!({})).await;
+    assert_eq!(client.next_message().await, None);
+    running.stop().await;
+}
+
 #[tokio::test]
 async fn notifications_released_while_unsubscribed_are_dropped() {
     let running = start_server().await;
@@ -1044,7 +1171,11 @@ async fn disconnect_responds_then_closes_the_connection() {
             .unwrap();
     bytes.push(b'\n');
     let _ = client.write.write_all(&bytes).await;
-    assert_eq!(client.next_message().await, None, "connection closed");
+    match timeout(IO_TIMEOUT, client.lines.next_line()).await.unwrap() {
+        Ok(None) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+        other => panic!("expected the connection to close, got {other:?}"),
+    }
     assert!(
         !running
             .socket

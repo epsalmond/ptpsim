@@ -84,6 +84,7 @@ pub struct Context {
     pub(crate) shutdown: broadcast::Sender<()>,
     pub(crate) declared_aux: Vec<(SocketRole, Arc<DeclaredAuxListener>)>,
     pub(crate) declared_aux_sync: Arc<Mutex<()>>,
+    pub(crate) ble: Option<crate::ble_socket::BleSocket>,
 }
 
 pub async fn handle(mut stream: TcpStream, context: Context) {
@@ -377,7 +378,7 @@ async fn apply_state_patch(context: &Context, body: &[u8]) -> Result<String, Str
     let _declared_aux_sync = context.declared_aux_sync.lock().await;
     let (applied, aux_readiness) = {
         let mut engine = context.engine.lock().await;
-        let applied = engine.apply_state_overlay(&overlay)?;
+        let applied = crate::apply_state_overlay(&mut engine, &overlay, context.ble.as_ref())?;
         let aux_readiness = context
             .declared_aux
             .iter()
