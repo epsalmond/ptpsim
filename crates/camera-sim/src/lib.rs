@@ -32,7 +32,7 @@ pub use fault::{
     AppliedFault, DataOrResponse, FaultApplication, FaultMutation, FaultSelector, FaultSet,
     FaultSpec, FaultStage, FaultView, WirePlan,
 };
-pub use framesource::{FrameSource, LoopingFrameSource, StaticFrameSource};
+pub use framesource::{FrameSource, LoopingFrameSource};
 pub use link::{CameraLink, SharedLink};
 pub use ptpip::{walk_ptpip, walk_ptpip_in, PtpIpError, PtpIpOutcome};
 pub use state::{CameraState, Phase, QueuedEvent};
@@ -316,7 +316,7 @@ properties:
     fn gate4_liveview_control_while_streaming() {
         let _tmp = tmp_card();
         let mut e = engine(_tmp.path());
-        let mut frames = StaticFrameSource::new(vec![0xFF, 0xD8, 0x42, 0xFF, 0xD9]);
+        let mut frames = LoopingFrameSource::new(vec![vec![0xFF, 0xD8, 0x42, 0xFF, 0xD9]]);
 
         expect_ok(e.on_operation(&op(0x1002, 1, vec![1]), None)); // OpenSession
         expect_ok(e.on_operation(&op(0x1016, 2, vec![0xdf01]), Some(&u16_data(22)))); // df01=22 -> LiveView

@@ -46,10 +46,6 @@ pub(crate) fn mode_matches(op_modes: &[String], mode_path: &str) -> bool {
 }
 
 impl CameraManifest {
-    pub fn schema_version(&self) -> &str {
-        &self.schema
-    }
-
     /// Look up an operation by code regardless of workflow.
     pub fn operation(&self, code: u16) -> Option<&Operation> {
         self.operations
@@ -533,17 +529,12 @@ impl CameraManifest {
 
     /// Which mode does `observed` put the camera in? Evaluates each mode's
     /// `detect` predicate; returns the first match (BTreeMap path order). `None`
-    /// → the client should fall back to a picker over [`Self::mode_paths`].
+    /// → the client should fall back to a picker over the keys of `modes`.
     pub fn detect_mode(&self, observed: &PropView) -> Option<&str> {
         self.modes
             .iter()
             .find(|(_, m)| m.detect.as_ref().is_some_and(|p| p.eval(observed)))
             .map(|(path, _)| path.as_str())
-    }
-
-    /// All defined mode paths.
-    pub fn mode_paths(&self) -> Vec<&str> {
-        self.modes.keys().map(|s| s.as_str()).collect()
     }
 
     /// Like [`Self::operation_available`], but also returns a [`ResolutionTrace`]
