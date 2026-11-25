@@ -1,4 +1,4 @@
-# `camera-protocol-ffi` — Python bindings
+# `camera-protocol-ffi` Python bindings
 
 uniffi-generated Python surface for the ptpsim manufacturer-index FFI.
 Same types and methods as the Swift / Kotlin sides; consume from any
@@ -68,7 +68,7 @@ if isinstance(result, Recognition.CANDIDATE):
         connection=result.connection,
         initial_scope=result.runtime_scope,
     )
-    # plan.steps is the walkable Step sequence — the same shape the iOS
+    # plan.steps is the walkable Step sequence, the same shape the iOS
     # dispatcher consumes.
 ```
 

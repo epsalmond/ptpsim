@@ -1,4 +1,4 @@
-# PCSS parity evidence — 2026-07-14
+# PCSS parity evidence (2026-07-14)
 
 This public summary records the protocol facts used by the GFX100 II manifest.
 Addresses in examples use the documentation-only `192.0.2.0/24` range; endpoint
