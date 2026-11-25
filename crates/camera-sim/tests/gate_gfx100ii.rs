@@ -1132,7 +1132,10 @@ fn image_import_prime_retries_selected_decode_failure() {
             0x1015,
             Some(vec![0xd212]),
             Some(1),
-            FaultMutation::TruncateData { keep: 4 },
+            FaultMutation::TruncateData {
+                keep: 4,
+                terminate: false,
+            },
         ))
         .unwrap();
     let outcome = walk_ptpip_in(
@@ -1153,7 +1156,10 @@ fn image_import_prime_does_not_retry_unselected_decode_failure() {
             0x1015,
             Some(vec![0xd212]),
             Some(1),
-            FaultMutation::TruncateData { keep: 4 },
+            FaultMutation::TruncateData {
+                keep: 4,
+                terminate: false,
+            },
         ))
         .unwrap();
     let error = walk_ptpip_in(

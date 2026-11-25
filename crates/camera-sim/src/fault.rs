@@ -66,6 +66,8 @@ pub enum FaultMutation {
     },
     TruncateData {
         keep: u64,
+        #[serde(default, skip_serializing_if = "is_false")]
+        terminate: bool,
     },
     ReplaceData {
         #[serde(rename = "bytesHex", with = "bytes_hex")]
@@ -73,6 +75,8 @@ pub enum FaultMutation {
     },
     ReplaceTransactionId {
         transaction_id: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stage: Option<DataOrResponse>,
     },
     DataFraming {
         framing: WireFraming,
@@ -80,6 +84,10 @@ pub enum FaultMutation {
     PropertyReadback {
         value: i64,
     },
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl FaultMutation {
@@ -155,11 +163,21 @@ pub enum WirePlan {
     None,
     CloseBeforeData,
     CloseBeforeResponse,
-    DelayData { ms: u64 },
-    DelayResponse { ms: u64 },
+    DelayData {
+        ms: u64,
+    },
+    DelayResponse {
+        ms: u64,
+    },
     SuppressData,
     SuppressResponse,
-    ReplaceTransactionId(u32),
+    InterruptData {
+        keep: u64,
+    },
+    ReplaceTransactionId {
+        transaction_id: u32,
+        stage: Option<DataOrResponse>,
+    },
     DataFraming(WireFraming),
 }
 
@@ -328,9 +346,17 @@ fn wire_plan(mutation: &FaultMutation) -> WirePlan {
         FaultMutation::Suppress {
             stage: DataOrResponse::Response,
         } => WirePlan::SuppressResponse,
-        FaultMutation::ReplaceTransactionId { transaction_id } => {
-            WirePlan::ReplaceTransactionId(*transaction_id)
-        }
+        FaultMutation::TruncateData {
+            keep,
+            terminate: true,
+        } => WirePlan::InterruptData { keep: *keep },
+        FaultMutation::ReplaceTransactionId {
+            transaction_id,
+            stage,
+        } => WirePlan::ReplaceTransactionId {
+            transaction_id: *transaction_id,
+            stage: *stage,
+        },
         FaultMutation::DataFraming { framing } => WirePlan::DataFraming(*framing),
         FaultMutation::FailResponse { .. }
         | FaultMutation::Close {
@@ -480,11 +506,25 @@ mod tests {
             FaultMutation::Suppress {
                 stage: DataOrResponse::Response,
             },
-            FaultMutation::TruncateData { keep: 3 },
+            FaultMutation::TruncateData {
+                keep: 3,
+                terminate: false,
+            },
+            FaultMutation::TruncateData {
+                keep: 3,
+                terminate: true,
+            },
             FaultMutation::ReplaceData {
                 bytes: vec![0xde, 0xad],
             },
-            FaultMutation::ReplaceTransactionId { transaction_id: 42 },
+            FaultMutation::ReplaceTransactionId {
+                transaction_id: 42,
+                stage: None,
+            },
+            FaultMutation::ReplaceTransactionId {
+                transaction_id: 42,
+                stage: Some(DataOrResponse::Response),
+            },
             FaultMutation::DataFraming {
                 framing: WireFraming::Compressed,
             },
@@ -523,9 +563,15 @@ mod tests {
         )
         .is_err());
 
-        let transaction_id = FaultMutation::ReplaceTransactionId { transaction_id: 42 };
+        let transaction_id = FaultMutation::ReplaceTransactionId {
+            transaction_id: 42,
+            stage: None,
+        };
         let value = serde_json::to_value(&transaction_id).unwrap();
-        assert_eq!(value["transactionId"], 42);
+        assert_eq!(
+            value,
+            serde_json::json!({"type": "replaceTransactionId", "transactionId": 42})
+        );
         assert_eq!(
             serde_json::from_value::<FaultMutation>(value).unwrap(),
             transaction_id

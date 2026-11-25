@@ -2425,7 +2425,10 @@ fn enumerate_with_truncated_d212(
         0x1015,
         Some(vec![0xd212]),
         Some(truncated_reads),
-        FaultMutation::TruncateData { keep: 4 },
+        FaultMutation::TruncateData {
+            keep: 4,
+            terminate: false,
+        },
     ));
     let reports = Arc::new(Reports::default());
     let result = block_on(run_initiator_action(
