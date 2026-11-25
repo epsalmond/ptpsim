@@ -181,7 +181,9 @@ impl MediaStore {
 
     /// Walk the card and assign stable handles. Handles are assigned in sorted
     /// path order so the same card yields the same handles across runs.
-    /// Symlinks whose target escapes the root are skipped.
+    /// A file symlink is listed when its target resolves inside the root.
+    /// Symlinks that escape the root, dangle, or point at a directory are
+    /// skipped, so a link back to an ancestor cannot make the walk recurse.
     pub fn scan(&mut self) -> Result<ScanSummary, MediaError> {
         let mut paths: Vec<(PathBuf, bool, u64)> = Vec::new();
         self.collect(&self.root.clone(), &mut paths)?;
@@ -230,23 +232,29 @@ impl MediaStore {
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
-            // Resolve symlinks safely: a link whose real target leaves the root
-            // is dropped entirely.
-            let meta = std::fs::symlink_metadata(&path)?;
-            let real = if meta.file_type().is_symlink() {
-                match path.canonicalize() {
+            // `DirEntry::file_type` does not follow symlinks, so a link is seen
+            // as a link here rather than as the thing it points at.
+            if entry.file_type()?.is_symlink() {
+                // A file link is listed when its real target stays inside the
+                // root. Links that escape the root or dangle are skipped.
+                // Directory links are skipped too: following one could revisit
+                // an ancestor and walk forever, and a card has no need for them.
+                let target = match path.canonicalize() {
                     Ok(t) if t.starts_with(&self.root) => t,
-                    _ => continue, // escapes root (or dangling) -> skip
+                    _ => continue,
+                };
+                let target_meta = std::fs::metadata(&target)?;
+                if target_meta.is_file() {
+                    out.push((path, false, target_meta.len()));
                 }
-            } else {
-                path.clone()
-            };
-            let real_meta = std::fs::metadata(&real)?;
-            if real_meta.is_dir() {
+                continue;
+            }
+            let meta = entry.metadata()?;
+            if meta.is_dir() {
                 out.push((path.clone(), true, 0));
                 self.collect(&path, out)?;
             } else {
-                out.push((path.clone(), false, real_meta.len()));
+                out.push((path, false, meta.len()));
             }
         }
         Ok(())
@@ -751,6 +759,66 @@ mod tests {
         assert!(store
             .assert_within_root(&outside.join("secret.JPG"))
             .is_err());
+    }
+
+    /// Scan `root` on a helper thread and return the filename of every object.
+    /// The test fails instead of hanging if the scan does not finish in time.
+    #[cfg(unix)]
+    fn scan_names_with_timeout(root: &Path) -> Vec<String> {
+        let root = root.to_path_buf();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut store = MediaStore::open(&root).unwrap();
+            let result = store.scan().map(|_| {
+                store
+                    .handles(ObjectQuery::default())
+                    .into_iter()
+                    .map(|h| store.object_info(h).unwrap().filename)
+                    .collect::<Vec<String>>()
+            });
+            let _ = tx.send(result);
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(20))
+            .expect("scan did not finish in time")
+            .expect("scan failed")
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scan_terminates_on_directory_symlink_loop() {
+        let _root = tmpdir();
+        let root = _root.path();
+        write(&root.join("DCIM/100_FUJI/real.JPG"), b"\xFF\xD8y\xFF\xD9");
+        // One link points at the media root, one at an intermediate ancestor.
+        std::os::unix::fs::symlink(root, root.join("DCIM/100_FUJI/to_root")).unwrap();
+        std::os::unix::fs::symlink(root.join("DCIM"), root.join("DCIM/100_FUJI/to_dcim")).unwrap();
+
+        let mut names = scan_names_with_timeout(root);
+        names.sort();
+        assert_eq!(names, vec!["100_FUJI", "DCIM", "real.JPG"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scan_skips_directory_symlinks_inside_and_outside_root() {
+        let _outside = tmpdir();
+        let outside = _outside.path();
+        let _root = tmpdir();
+        let root = _root.path();
+        write(&outside.join("secret.JPG"), b"\xFF\xD8x\xFF\xD9");
+        write(&root.join("DCIM/100_FUJI/real.JPG"), b"\xFF\xD8y\xFF\xD9");
+        std::os::unix::fs::symlink(outside, root.join("DCIM/outside_dir")).unwrap();
+        std::os::unix::fs::symlink(root.join("DCIM/100_FUJI"), root.join("DCIM/101_FUJI")).unwrap();
+        // A file link inside the root is still listed once.
+        std::os::unix::fs::symlink(
+            root.join("DCIM/100_FUJI/real.JPG"),
+            root.join("DCIM/100_FUJI/inlink.JPG"),
+        )
+        .unwrap();
+
+        let mut names = scan_names_with_timeout(root);
+        names.sort();
+        assert_eq!(names, vec!["100_FUJI", "DCIM", "inlink.JPG", "real.JPG"]);
     }
 
     #[test]
