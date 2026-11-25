@@ -264,17 +264,13 @@ fn registration_steps(ble: &FamilyBleBlock) -> Vec<camera_config::index::Step> {
 fn registration_tolerates_missing_optional_reads_like_the_legacy_app() {
     let view = xa7();
     let ble = view.ble.as_ref().unwrap();
-    // AP state stays subscribable (the subscribe is strict) but its read
-    // fails, so only the tail read is tolerated.
-    let mut responder = registration_responder_with(
+    let mut responder = registration_responder(
         ble,
         &[
             "reservationAfterShooting",
             "pairedSmartDeviceCount",
             "firmwareRevisionString",
         ],
-        &["apState"],
-        &[],
     );
     let outcome = walk_registration(&registration_steps(ble), &mut responder)
         .expect("registration completes past the tolerated reads");
@@ -283,15 +279,13 @@ fn registration_tolerates_missing_optional_reads_like_the_legacy_app() {
         [
             "steps[11].bleRead",
             "steps[12].bleRead",
-            "steps[13].bleRead",
-            "steps[28].bleRead",
+            "steps[13].bleRead"
         ]
     );
     for missing in [
         "reservationAfterShooting",
         "pairedSmartDeviceCount",
         "firmware",
-        "apState",
     ] {
         assert!(!outcome.scope.contains_key(missing), "{missing} is unbound");
     }
@@ -322,11 +316,12 @@ fn registration_fails_without_the_serial_or_ssid() {
 }
 
 /// The legacy vendor mobile app never marks the link ready when its remaining
-/// CCCD writes all fail, so a link that drops during registration must fail
-/// the walk rather than let every later step fail tolerantly. The responder
-/// has no link-drop switch, so the drop is modelled by exposing only the
-/// characteristics steps 0 to 10 use: every later read and every later
-/// subscribe except the SSID one then fails, as on a dropped link.
+/// CCCD writes fail without a callback, as on a dropped link, so a link that
+/// drops after the SSID read must fail the walk rather than let every later
+/// step fail tolerantly. The responder has no link-drop switch, so the drop is
+/// modelled by exposing only the characteristics steps 0 to 10 use: every
+/// later read and every later subscribe except the SSID one then fails, as on
+/// a dropped link.
 #[test]
 fn registration_fails_when_the_link_drops_after_the_ssid_read() {
     let view = xa7();
@@ -348,6 +343,33 @@ fn registration_fails_when_the_link_drops_after_the_ssid_read() {
         panic!("a dropped link must not complete registration");
     };
     assert_eq!(error.step, "steps[23].bleSubscribe");
+}
+
+/// The app marks the link ready without waiting for the tail reads, so after
+/// the strict AP-state subscribe the manifest needs one more strict step to
+/// catch a drop. A drop just after `steps[23]` is modelled by exposing every
+/// characteristic steps 0 to 23 use, with AP state subscribable but no longer
+/// readable, and nothing the later steps need. The walk must fail at the tail
+/// AP-state read instead of completing.
+#[test]
+fn registration_fails_when_the_link_drops_after_the_ap_state_subscribe() {
+    let view = xa7();
+    let ble = view.ble.as_ref().unwrap();
+    let mut responder = registration_responder_with(
+        ble,
+        &[
+            "transferState",
+            "dateSyncState",
+            "locationSyncState",
+            "firmwareUpdateState",
+        ],
+        &["apState"],
+        &[],
+    );
+    let Err(error) = walk_registration(&registration_steps(ble), &mut responder) else {
+        panic!("a dropped link must not complete registration");
+    };
+    assert_eq!(error.step, "steps[28].bleRead");
 }
 
 /// The legacy vendor mobile app sends its second name write when the GAP name

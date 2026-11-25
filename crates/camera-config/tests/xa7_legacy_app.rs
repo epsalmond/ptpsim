@@ -143,8 +143,9 @@ fn xa7_manifest_contains_only_public_relative_evidence_paths() {
 /// The legacy vendor mobile app continues past read and CCCD error callbacks,
 /// so the registration plan tolerates them too. The strict steps are the
 /// connection setup, the pairing-key and name writes, the peripheral-name
-/// step, the serial and SSID reads, and the AP-state subscribe, each with a
-/// comment in the index giving its reason.
+/// step, the serial and SSID reads, and the AP-state subscribe and tail
+/// AP-state read that guard against a dropped link, each with a comment in
+/// the index giving its reason.
 #[test]
 fn xa7_registration_tolerates_what_the_legacy_app_tolerates() {
     let pair = xa7_plan_steps("legacy-app-pair");
@@ -162,13 +163,13 @@ fn xa7_registration_tolerates_what_the_legacy_app_tolerates() {
             "steps[9].bleRead",
             "steps[10].bleRead",
             "steps[23].bleSubscribe",
+            "steps[28].bleRead",
         ]
     );
     for (index, capture) in [
         (11, "reservationAfterShooting"),
         (12, "pairedSmartDeviceCount"),
         (13, "firmware"),
-        (28, "apState"),
     ] {
         let Step::BleRead(read) = &pair[index] else {
             panic!("steps[{index}] is a bleRead");
