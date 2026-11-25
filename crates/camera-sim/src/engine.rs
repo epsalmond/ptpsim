@@ -1865,7 +1865,10 @@ impl Engine {
         };
         let previous_declared = declared(previous_mode.as_deref());
         let new_declared = declared(detected.as_deref());
-        if !transfer_active {
+        // A change between two modes that declare the same phase keeps the
+        // current phase (#570): a live-view selector write that moves the
+        // session between sibling modes must not reset Streaming to LiveView.
+        if !transfer_active && new_declared != previous_declared {
             if let Some(phase) = new_declared {
                 self.state.phase = phase;
             }
@@ -3853,6 +3856,55 @@ properties:
         ));
         assert!(engine.channel_ready(camera_config::SocketRole::Event));
         assert!(engine.channel_ready(camera_config::SocketRole::LiveView));
+    }
+
+    /// #570: a selector write that moves a streaming session between two modes
+    /// that both declare `liveView` keeps the phase and the live-view feature.
+    #[test]
+    fn same_phase_mode_transition_keeps_streaming() {
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: TESTCO, model: TM1, firmware: "1" }
+connections:
+  app: { kind: ptpip, modes: [stills, video] }
+modes:
+  stills: { detect: { prop: "0xd001", eq: 1 }, phase: liveView }
+  video: { detect: { prop: "0xd001", eq: 2 }, phase: liveView }
+operations:
+  "0x101c": { name: InitiateOpenCapture }
+properties:
+  "0xd001": { name: selector, type: u16, access: readWrite }
+"#,
+        )
+        .unwrap();
+        let mut engine = Engine::new(manifest, empty_store());
+        let select = |engine: &mut Engine, tid, value: u16| {
+            response_code_of(engine.on_operation(
+                &req(op::SET_DEVICE_PROP_VALUE, tid, vec![0xd001]),
+                Some(&value.to_le_bytes()),
+            ))
+        };
+        assert_ok_open(&mut engine);
+        assert_eq!(select(&mut engine, 2, 1), resp::OK);
+        assert_eq!(engine.phase(), Phase::LiveView);
+        assert!(reply_is_ok(
+            &engine.on_operation(&req(op::INITIATE_OPEN_CAPTURE, 3, vec![]), None)
+        ));
+        assert_eq!(engine.phase(), Phase::Streaming);
+        let lifecycle_events = engine.connection_lifecycle_trace().len();
+
+        assert_eq!(select(&mut engine, 4, 2), resp::OK);
+        assert_eq!(engine.state.active_mode.as_deref(), Some("video"));
+        assert_eq!(engine.phase(), Phase::Streaming);
+        assert_eq!(select(&mut engine, 5, 1), resp::OK);
+        assert_eq!(engine.state.active_mode.as_deref(), Some("stills"));
+        assert_eq!(engine.phase(), Phase::Streaming);
+        assert_eq!(
+            engine.connection_lifecycle_trace().len(),
+            lifecycle_events,
+            "the live-view feature is neither exited nor re-entered"
+        );
     }
 
     #[test]
