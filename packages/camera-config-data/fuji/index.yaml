@@ -628,17 +628,21 @@ families:
             - bleRead: { gatt: cameraBleProtocolVersion, encoding: u16-le, captureAs: cameraBleProtocolVersion, tolerant: true }
             - bleSubscribe: { gatt: cameraSSIDNameString, timeoutMs: 3000, mode: indicate, tolerant: true }
             # Strict, unlike a single CCCD in the app: the app never marks the
-            # link ready when the remaining CCCD writes all fail. A tolerant
-            # step cannot express that, so this one keeps a walk from
-            # completing on a dropped link.
+            # link ready when the remaining CCCD writes fail without a
+            # callback, as on a dropped link. A tolerant step cannot express
+            # that, so this one keeps a walk from completing on a dropped link.
             - bleSubscribe: { gatt: apState, timeoutMs: 3000, mode: indicate }
             - bleSubscribe: { gatt: transferState, timeoutMs: 3000, mode: indicate, tolerant: true }
             - bleSubscribe: { gatt: dateSyncState, timeoutMs: 3000, mode: notify, tolerant: true }
             - bleSubscribe: { gatt: locationSyncState, timeoutMs: 3000, mode: notify, tolerant: true }
             - bleSubscribe: { gatt: firmwareUpdateState, timeoutMs: 3000, mode: indicate, tolerant: true }
             # The app issues these two reads in parallel with marking the link
-            # ready and does not wait for them.
-            - bleRead: { gatt: apState, encoding: u16-le, captureAs: apState, tolerant: true }
+            # ready and does not wait for them. The AP-state read stays strict
+            # anyway, so a walk cannot complete on a link that dropped after
+            # the AP-state subscribe. With the subscribe, a drop anywhere up to
+            # this read fails the walk; only a drop during the transfer-state
+            # read, the last step, can still complete.
+            - bleRead: { gatt: apState, encoding: u16-le, captureAs: apState }
             - bleRead: { gatt: transferState, encoding: u16-le, captureAs: transferState, tolerant: true }
 
         # X-A7 saved-key reconnect. The legacy vendor mobile app replays the
