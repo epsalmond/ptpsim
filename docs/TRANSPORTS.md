@@ -31,7 +31,7 @@ becoming "vcam per transport":
 3. New code is allowed only for: a new **wire framing** (→ `ptp-core` /
    `protocol-primitives`), a new **protocol family** dispatcher (e.g. HTTP), or a
    **runtime capability** (TLS, a USB PHY). Each lands as a shared, concern-
-   organized peer — never a per-model branch.
+   organized peer, never a per-model branch.
 4. **Two dispatch shapes, one state model.** PTP transports call
    `engine.on_operation(req, data)`. XLV calls a parallel
    `engine.on_http(route, req)`. Both resolve behavior from the manifest and
@@ -142,7 +142,7 @@ the in-progress USB captures feed.)
 
 ## 2. XLV / HTTP(S) transport
 
-XLV is the camera's HTTP web service — a **second protocol family**: HTTP routes
+XLV is the camera's HTTP web service, a **second protocol family**: HTTP routes
 → handlers (the HTTP analog of the PTP op table), with live view delivered as
 chunked / `multipart/x-mixed-replace` MJPEG. It is a **sibling dispatcher that
 shares engine state**, not a separate camera; reads/writes hit the same property
@@ -155,7 +155,7 @@ that no-op over PTP become real.
 - fw **2.40**: XLV requires **HTTPS**, and the client must **trust the camera's
   self-signed cert**.
 
-This is pure manifest data — a `tls:` block that differs between the two firmware
+This is pure manifest data: a `tls:` block that differs between the two firmware
 manifests. No code knows about the firmware difference.
 
 ### Manifest block
@@ -181,12 +181,12 @@ transports:
 
 - An **HTTP router** + handler set in the service. The existing control HTTP is
   hand-rolled and minimal; XLV likely warrants a small real router (routes,
-  path params, chunked streaming) — still framework-light.
+  path params, chunked streaming), still framework-light.
 - **TLS termination** via `rustls`; the self-signed cert is minted per instance
   and surfaced (e.g. a `/cert` control endpoint or a file) so the app/probe can
   trust it. The "client must trust the cert" is the *client's* job; the simulator
   just presents one.
-- `engine.on_http(route, req) -> HttpReply` — parallel to `on_operation`, over
+- `engine.on_http(route, req) -> HttpReply`, parallel to `on_operation`, over
   the same `CameraState`.
 
 ### Probe
@@ -199,7 +199,7 @@ and capture routes/props into bundles.
 
 ## 3. Wireless tether transport
 
-Likely **PTP/IP-shaped** (confirm via probe) — i.e. another transport feeding the
+Likely **PTP/IP-shaped** (confirm via probe), i.e. another transport feeding the
 **existing PTP engine**, which makes it the cheapest of the three. If it uses a
 knock/announce establishment (like PCSS), that establishment is a
 `protocol-primitives` strategy referenced by the manifest; the command session
@@ -441,7 +441,7 @@ Limits:
 
 What stays invariant: `ptp-core`, the `camera-manifest` model shape, and
 `camera-sim`'s state model. Schema additions (`kind: ptpip-usb|http-xlv|ptpip-tether`,
-`tls`, `modes`) are all optional fields — `camera-manifest/v1` stays compatible.
+`tls`, `modes`) are all optional fields; `camera-manifest/v1` stays compatible.
 
 ## Build order when these land
 

@@ -4,10 +4,10 @@ status: shipped
 read-when: Tracing why the manifest/config engine is shaped the way it is; the protocol-mapper section is superseded by canonical-observation-loop.md.
 ---
 
-# Implementation Plan: `camera-config` — standalone camera manifest/config system with modes as a first-class axis
+# Implementation Plan: `camera-config`, a standalone camera manifest/config system with modes as a first-class axis
 
 Revised 2026-05-26 (integrates an external hole-poking
-review — see "How the review reshaped this"). Grounded in `DESIGN.md` (Manifest
+review; see "How the review reshaped this"). Grounded in `DESIGN.md` (Manifest
 Model + Transport/Mode matrix), `docs/TRANSPORTS.md`, `docs/plans/manifest-system.md`,
 `docs/plans/ios-adoption.md`, and the current `crates/camera-manifest/` source.
 A delta on what exists, not greenfield.
@@ -21,20 +21,20 @@ A delta on what exists, not greenfield.
 ## Context (orientation)
 
 **What this is.** `camera-config` is the data + engine that answers per-camera
-questions — "does this model/fw/mode support operation X?", "how do I encode
+questions: "does this model/fw/mode support operation X?", "how do I encode
 aperture?", "which camera is this BLE advert?", "what modes exist over USB?". It
 is the single source of camera-protocol truth that every client queries instead
 of hardcoding.
 
-**Why it exists.** ptpsim's premise is *no per-manufacturer code* — adding a
+**Why it exists.** ptpsim's premise is *no per-manufacturer code*: adding a
 camera is a data change, never a new crate. Today that data lives in a
 `camera-manifest` crate *inside* ptpsim. This plan extracts it so the boundary
 between engine code and camera data is a **repo boundary**, and makes ptpsim a
 *consumer* like everyone else. client application (iOS, then macOS/Android/Linux) is the
-other consumer — see `ios-adoption.md`, which depends on this.
+other consumer; see `ios-adoption.md`, which depends on this.
 
-**Scale & threat model (write this down — it decides several arguments below).**
-This is an **embedded library + a small, curated data corpus** — on the order of
+**Scale & threat model (write this down; it decides several arguments below).**
+This is an **embedded library + a small, curated data corpus**, on the order of
 a handful of manufacturers, authored and reviewed by us, shipped as a **signed
 bundle** to first-party clients. It is **NOT** a public multi-tenant endpoint,
 **NOT** a runtime ingestion point for untrusted third-party manifests, **NOT**
@@ -42,7 +42,7 @@ serving thousands of vendors. Consequence: **optimize for auditability and
 simplicity over open-ended expressivity.** Because the data is curated and signed
 and drives what bytes a client puts on the wire, a closed declarative grammar
 beats a scripting sandbox, and a simple data-selected version comparator beats a
-regex/AST engine — precisely *because* of this scale, not in spite of it. (If this
+regex/AST engine, precisely *because* of this scale, not in spite of it. (If this
 were ever a public ingestion endpoint, the calculus would change. By design it
 isn't.)
 
@@ -63,11 +63,11 @@ isn't.)
 1. **Names.** Engine `camera-config`; data repo `camera-config-data`; the RE/
    characterization tool renamed `camera-probe` → **`protocol-mapper`**. Never
    ship a `cc` binary.
-2. **Extract + rename + split immediately** — no real consumers yet, so this is
+2. **Extract + rename + split immediately**: no real consumers yet, so this is
    step 1, not a deferred churn.
 3. **Two axes.** *What is it?* = body (`mfr/model/soc/fw`). *Where is it?* = camera
    state. The engine resolves facts keyed by (What, Where).
-4. **Connection and mode are ORTHOGONAL axes — not nested.** Both are "Where"
+4. **Connection and mode are ORTHOGONAL axes, not nested.** Both are "Where"
    (connection is a user-selected state too), but mode capabilities are largely
    transport-independent, so nesting modes under connections would duplicate them.
    The Where-coordinate is the **pair `(connection, mode)`**. Gating intersects the
@@ -76,13 +76,13 @@ isn't.)
    feature declares `modes: [Shooting/Stills]` (path-prefix matched, so hierarchy
    gives inheritance), optionally `connections: [App, USBTether]` (default = all),
    and optionally `requires: <predicate>` (a runtime prerequisite over observed
-   props — e.g. card-inserted, not-writing-buffer). This avoids pseudo-mode
+   props, e.g. card-inserted, not-writing-buffer). This avoids pseudo-mode
    explosion (`Stills/NoCard`, `Stills/Writing`).
    Ordered wire rituals that must complete before later access use a separate
    `sequenceGates` / `startsGate` / `completesGate` / `requiresGate` model. Do
    not overload `requires`: it is predicate-state gating, while sequence gates
    are simulator negative-oracle metadata for order-sensitive responders.
-6. **Modes are hierarchical paths** (`Shooting/Stills`) — for gate inheritance
+6. **Modes are hierarchical paths** (`Shooting/Stills`), for gate inheritance
    (prefix match), UI grouping, and `detect` attachment. A **mode graph** of
    action-bearing **mode-entry** edges (optionally `from`-qualified) describes
    transitions; an edge carries exactly one typed execution: **PTP wire actions**,
@@ -91,31 +91,31 @@ isn't.)
    plan with manifest-bound parameters, opens a fresh PTP session, and reuses the
    target mode's cold entry; BLE and OS-network work never becomes a PTP step.
    A wire action is a closed
-   `Step` vocabulary — `setProp`/`getProp`/`readEcho`/`sendOp`, each with optional
+   `Step` vocabulary: `setProp`/`getProp`/`readEcho`/`sendOp`, each with optional
    `tolerant` (a non-OK PTP *response* is logged + swallowed; only transport failure
    aborts) and `sendOp` `params` that are **literals or a named runtime slot**.
    The I/O-owning app supplies ordinary runtime values (cf. value-policy
    `from-pairing`); a manifest transaction-ID capture can also bind the
    executor-allocated ID of an earlier `sendOp` (for example
    `openCaptureTxId`) for a later step. **The no-DSL line:** named runtime slots
-   are data; arithmetic, branches, or loops over them would be the script trap —
-   not added.
+   are data; arithmetic, branches, or loops over them would be the script trap
+   and are not added.
 7. **A workflow ≠ a mode.** Mode = camera state (gates). Workflow = app-side user
    task that *traverses* the mode graph (map vs route).
 8. **One closed predicate grammar** serves both `requires` (gating) and `detect`
    (mode determination): leaf = property comparison (`eq`/`ne`/`lt`/`gt`, optional
-   `mask`), connectives = `all`/`any`/`not`. Finite, total, side-effect-free —
+   `mask`), connectives = `all`/`any`/`not`. Finite, total, side-effect-free,
    **not** an embedded script engine (that would make a signed, wire-driving
    artifact Turing-complete and unauditable; wrong trade at this scale).
 9. **Schema = hard-nested sections** (`identification`/`protocol`/`capability`/
-   `establishment`) + a flat `modes` table + a `connections` table — so sensitive
+   `establishment`) + a flat `modes` table + a `connections` table, so sensitive
    `establishment` can ship as a private overlay while the rest is public.
 10. **Resolution is a continuous funnel, not rigid phases.** Feed the engine any
     observed facts (VID/PID, mDNS TXT, BLE advert, `GetDeviceInfo`, observed
     props); it returns the **narrowest config + residual ambiguity**. Identification
     (signal→target) and config resolution are the *same* query. Invariant: minimal
     facts must still yield usable bring-up config (fw-agnostic facts resolve early).
-11. **Firmware is a literal string** (`"2.30"` Fuji, `"1.2.3"` Canon) — identity is
+11. **Firmware is a literal string** (`"2.30"` Fuji, `"1.2.3"` Canon); identity is
     always the raw string. Ordering for ranges is a **data-selected named comparator**
     (default dotted-integer, variable-arity, component-wise within a manufacturer)
     that **fails soft**: an unparseable version falls back to exact-string match,
@@ -126,20 +126,20 @@ isn't.)
     against a real camera; the sketches below are placeholders until that lands.
 14. **Composition is by id-keyed reference, never body→body.** Connections/modes
     are records with stable ids; a body lists the ones it has by `ref`. The engine
-    loads all id-keyed records into a namespace — *where* the YAML physically lives
+    loads all id-keyed records into a namespace; *where* the YAML physically lives
     (body file / manufacturer file / a shared `connections/xlv-http.yaml`) is
     irrelevant to resolution. So an interface shared across bodies (e.g. the XLV/HTTP
     surface the GFX100 II has built-in and the X-H2S gets via the FT-XH adapter) is
-    one shared record both bodies reference — *not* one body importing another's
+    one shared record both bodies reference, *not* one body importing another's
     manifest (that makes a body a hidden dependency and is the trap).
 15. **Connection availability is conditional.** A body's connection `ref` may carry
     `availableWhen: { firmware: { lt|gt|... } }` (evaluated via the §4 version
-    comparator — e.g. instax-printer, present ≤fw2.30, removed at fw2.40) and/or
+    comparator, e.g. instax-printer, present ≤fw2.30, removed at fw2.40) and/or
     `requiresHardware: <id>` (e.g. FT-XH provides XLV on the X-H2S). Deferred as
     *data*, present as *mechanism*.
 16. **Value-set source = `camera` | `manifest`.** A shared connection carries the
     *mechanism* (op/prop to set a value); the allowed *value set* is sourced either
-    from the camera at runtime (`source: camera`, via DevicePropDesc — authoritative)
+    from the camera at runtime (`source: camera`, via DevicePropDesc, authoritative)
     or declared per-body (`source: manifest`, values:[…]). **Runtime-discovered beats
     manifest-declared:** don't hand-maintain what the camera enumerates; the manifest
     fills only what the camera doesn't report (labels, gating, non-enumerated sets).
@@ -147,19 +147,19 @@ isn't.)
     XLV mechanism without code. Fits sans-io (client reads the desc, feeds the enum).
 
 **Build the vocabulary now, populate GFX100 II only.** The core invariant is
-"a new body is a data PR, never a code change" — so the engine must be able to
+"a new body is a data PR, never a code change", so the engine must be able to
 *express* shared/conditional/runtime-sourced records before a second body lands,
 or we break that invariant the moment we add the X-H2S. This is not speculative:
-**GFX100 II alone exercises every mechanism** — instax (fw-gated connection),
+**GFX100 II alone exercises every mechanism**: instax (fw-gated connection),
 XLV/HTTP (id-keyed shared connection), recording modes (camera-vs-manifest value
-source) — so all of it is buildable and testable today against the one body we own.
+source). So all of it is buildable and testable today against the one body we own.
 
 ## How the review reshaped this (so the next reviewer sees the reasoning)
 An external no-context review pushed five points. Outcome: orthogonal
 connection/mode (#4, adopted), property prerequisites (#5, adopted), one predicate
-grammar (#8, adopted — but rejecting the reviewer's embedded-scripting fix on
+grammar (#8, adopted, but rejecting the reviewer's embedded-scripting fix on
 auditability+scale grounds), continuous-funnel resolution (#10, adopted, simplifies),
-and fail-soft data-selected version ordering (#11, adopted — lighter than the
+and fail-soft data-selected version ordering (#11, adopted; lighter than the
 reviewer's regex proposal because the real manufacturers use clean schemes and the
 corpus is curated). The scale/threat-model section above is the context the review
 lacked.
@@ -176,7 +176,7 @@ value-policy; (2) `mode` conflated with `workflow`; (3) no connection binding;
 extraction is a move, not a detangle.
 
 ## 2. Engine extraction (step 1)
-1. Audit deps (expected serde-only) — workspace move.
+1. Audit deps (expected serde-only); workspace move.
 2. To the engine: `model.rs`, `query.rs`, `lib.rs`, `error.rs`, new resolution
    modules (§4), `generate.rs`. Data → `camera-config-data`. Rename
    `camera-manifest`→`camera-config` and `tools/camera-probe`→`protocol-mapper`
@@ -206,7 +206,7 @@ SOC membership is data; using the tier is engine code.
 ### Schema shape (orthogonal axes; flat predicate-gated catalog)
 Top level = `camera` (What) + four fact-sections + a flat `modes` table + a
 `connections` table. **Gating lives on the operation/feature** (it declares which
-modes/connections/runtime-conditions allow it) — modes and connections are
+modes/connections/runtime-conditions allow it); modes and connections are
 *referenced*, never duplicated.
 ```yaml
 schema: camera-config/v1                                               # v1 never shipped under the old name; grows additively, no v2
@@ -258,7 +258,7 @@ connections:                         # the connection axis (a user-selected stat
   # HTTP / MemoryCard / Auto: stubs until the protocol-mapper survey
 ```
 
-### The predicate grammar (closed, declarative — shared by `requires` and `detect`)
+### The predicate grammar (closed, declarative, shared by `requires` and `detect`)
 ```
 predicate :=
     { prop: <code>, eq|ne|lt|gt: <value>, mask?: <value> }   # leaf: property comparison
@@ -268,11 +268,11 @@ predicate :=
 ```
 Total, side-effect-free, no loops, no property *writes*. Evaluated by the engine
 over property values the client supplies (sans-io). This is the **entire**
-conditional vocabulary — gating prerequisites and mode detection both use it. If a
+conditional vocabulary: gating prerequisites and mode detection both use it. If a
 future need can't be expressed here, add a named leaf op (e.g. `inRange`), not a
 script.
 
-Notes: gating intersects axes — an op is available iff `(connection, mode)` matches
+Notes: gating intersects axes. An op is available iff `(connection, mode)` matches
 its `modes`/`connections` sets **and** its `requires` predicate holds over current
 state. Mode availability per connection is expressed by ops' `connections` (no
 duplication). `Auto` = camera-side determination; declared, app detects which it
@@ -286,26 +286,26 @@ Three real cases drove decisions #14–#16; the schema must *express* all of the
 talk over an interface) lives on the connection record; capability (what *this*
 body can do) lives on the body; the resolved camera is their intersection.
 ```yaml
-# gfx100ii.yaml — the body references connections by id, with conditions
+# gfx100ii.yaml: the body references connections by id, with conditions
 connections:
   - ref: xlv-http                                    # built-in on this body
   - ref: instax-printer
     availableWhen: { firmware: { lt: "2.40" } }      # ≤2.30 only; removed at 2.40 (§4 comparator)
-# x-h2s.yaml (future, DATA-ONLY — no engine change)
+# x-h2s.yaml (future, DATA-ONLY, no engine change)
 connections:
   - ref: xlv-http
     requiresHardware: ft-xh                          # adapter provides the same interface
   - ref: instax-printer
 ```
 ```yaml
-# connections/xlv-http.yaml — shared mechanism, referenced by many bodies
+# connections/xlv-http.yaml: shared mechanism, referenced by many bodies
 id: xlv-http
 establishment: ...            # how to open it (private-overlay-able)
 modes: [Shooting/Video, ...]  # connection-bound modes
 operations:
   setRecordingMode: { code: 0x...., property: "0xRRRR", modes: [Shooting/Video] }
 ```
-**Value-set source** — shared mechanism, body/camera-specific values:
+**Value-set source** (shared mechanism, body/camera-specific values):
 ```yaml
 properties:
   "0xRRRR":                    # recordingMode
@@ -320,12 +320,12 @@ Runtime-discovered (`source: camera`) wins; `manifest` fills gaps + labels + gat
 **Deferred as data, not mechanism:** the shared `xlv-http`/`instax` extraction and
 `x-h2s.yaml` themselves; SOC-based *fallback resolution* (explicit shared records do
 the sharing, so SOC likely reduces to a pure grouping/discovery tag with no
-resolution behavior — leave that hook unbuilt). `fuji.yaml` is real and kept
+resolution behavior; leave that hook unbuilt). `fuji.yaml` is real and kept
 (manufacturer-tier `versionOrder` + initiator identity + fallbacks; never a model).
 
-## 4. Resolution engine (the finite vocabulary — no procedural DSL)
+## 4. Resolution engine (the finite vocabulary, no procedural DSL)
 New modules in `camera-config`:
-- **`resolve.rs` — the funnel.** `resolve(observed_facts) -> Resolution` where
+- **`resolve.rs`: the funnel.** `resolve(observed_facts) -> Resolution` where
   `observed_facts` is any subset of {VID/PID, mDNS, BLE advert, fw, observed prop
   values}, and `Resolution { config, candidates, ambiguity }`. Specificity fallback
   merges `root→fuji→soc→model→fw`, most-specific-wins; **the same fallback runs on
@@ -339,22 +339,22 @@ New modules in `camera-config`:
   comparator (default `dotted-int`: parse to a component vector, compare
   component-wise within a manufacturer, pad trailing with 0; `"2.30"`→`[2,30]`,
   `"1.2.3"`→`[1,2,3]`, `[2,9] < [2,30]`). **If a version can't be parsed for
-  ordering, fall back to exact-string match** — never panic, never drop. Ranges are
+  ordering, fall back to exact-string match**; never panic, never drop. Ranges are
   rare (instax/PIN deltas); exact-match is the common path and needs no parsing.
-- **SOC tier** — inject `soc/<tier>` between manufacturer and model per `soc:`.
-- **value-policy** — `fixed` / `generated(scheme,persist)` / `from-pairing(source)`
+- **SOC tier**: inject `soc/<tier>` between manufacturer and model per `soc:`.
+- **value-policy**: `fixed` / `generated(scheme,persist)` / `from-pairing(source)`
   (ios-adoption init identity).
-- **predicate evaluator** — evaluates §3's grammar over supplied prop values.
+- **predicate evaluator**: evaluates §3's grammar over supplied prop values.
 
 ### Firmware narrowing within the funnel
 fw can arrive from *any* fact, not just `GetDeviceInfo`: a newer camera's mDNS TXT
 or BLE advert may carry it, and **bring-up behavior can narrow it** (on fw 2.40
-"pair" demands PIN, on 2.30 it doesn't — modeled as a reactive-workflow transition
+"pair" demands PIN, on 2.30 it doesn't; modeled as a reactive-workflow transition
 on the observed "PIN requested" event, which is also a fw-narrowing signal:
 `PIN-requested ⟹ fw ≥ 2.40`). The funnel consumes whichever arrives first; no
 client-side phase choreography.
 
-## 5. Query API — funnel + orthogonal coordinate
+## 5. Query API: funnel + orthogonal coordinate
 ```rust
 // the funnel: feed any observed facts, get narrowest config + what's still ambiguous
 fn resolve(&self, facts: &ObservedFacts) -> Resolution;   // subsumes identify()
@@ -376,7 +376,7 @@ fn discovery_for(&self, t, connection) -> Option<DiscoveryDescriptor>;
 Keep `supports_operation(workflow, code)` as a deprecation shim so `camera-sim`/
 ptpsim don't break mid-extraction.
 
-### Identification / discovery — the "who announces" axis (now part of the funnel)
+### Identification / discovery: the "who announces" axis (now part of the funnel)
 Each connection's `discovery` descriptor records the mechanism + who announces;
 only some auto-discover:
 
@@ -395,7 +395,7 @@ distinct from the sensitive establishment handshake (separate section).
 ## 5b. Resolution trace + the dev iteration loop
 The legibility primitive that makes fast config iteration possible: every decision
 query (`operation_available`, `detect_mode`, `control_for`, `resolve`) can also emit a
-**`ResolutionTrace`** — a structured, serializable, side-effect-free explanation of
+**`ResolutionTrace`**, a structured, serializable, side-effect-free explanation of
 *why* it answered as it did:
 - which tiers merged (`root→mfr→soc→model→fw`) and which one supplied the winning fact;
 - the `(connection, mode)` evaluated, and the path-prefix match that applied;
@@ -403,17 +403,17 @@ query (`operation_available`, `detect_mode`, `control_for`, `resolve`) can also 
   supplied observed values;
 - the value-policy applied; and residual `candidates`/`ambiguity` (the funnel's output).
 
-It is pure — computed from the same data, no I/O. **It is what "see what the manifest
+It is pure: computed from the same data, no I/O. **It is what "see what the manifest
 delivered" means.** Two loops consume it, both legible because of it:
 - **App (human loop):** the FFI returns the trace alongside the answer (a `*_explained`
   variant or a trace field, opt-in for dev/telemetry builds); the app's telemetry
   captures it verbatim. Flow: error fires → telemetry shows the error *and* the manifest's
   answer that produced it → edit the manifest → **hot-reload the bundle** (no rebuild) →
-  retry. The app always resolves **locally** (embedded FFI, sans-io) — never remotely —
+  retry. The app always resolves **locally** (embedded FFI, sans-io), never remotely,
   so the loop tunes exactly the path that ships (no dev/prod skew).
 - **Automation (protocol-mapper):** a thin **gRPC resolver wrapping the sans-io engine**
   (the wrapper owns I/O; the engine stays pure) hosts resolution for an automated
-  mutate→observe→converge loop against the **simulator** (or a camera) — try a manifest,
+  mutate→observe→converge loop against the **simulator** (or a camera): try a manifest,
   read the trace + the responder's reaction, adjust, repeat. The app feeds *real-usage*
   telemetry into this; it does **not** host the resolver. → dev-tool follow-up, not engine
   scope. Keeps the gRPC/I/O in the tool layer where it belongs.
@@ -421,7 +421,7 @@ delivered" means.** Two loops consume it, both legible because of it:
 **Landed 2026-05-26** as an `explain()` sibling (not trace-on-every-call):
 `operation_available_explained(connection, mode, op, observed) -> (Availability,
 ResolutionTrace)` in `camera-config` (`trace.rs`), with `Predicate::explain` recording
-every leaf (prop / observed / masked-effective / comparator / passed — no short-circuit).
+every leaf (prop / observed / masked-effective / comparator / passed; no short-circuit).
 FFI exposes it as `operation_available_explained -> GateExplanation`. Remaining (grows
 with the engine): `detect`/`resolve` explained variants + the multi-tier funnel trace
 when the funnel lands.
@@ -429,11 +429,11 @@ when the funnel lands.
 ## 6. Manifest-DATA vs RUNTIME line (the crux)
 - **DATA (declared):** which connections/modes exist; gating (`modes`/`connections`/
   `requires` predicates); how to enter (`entries`); `detect` predicates; discovery
-  signatures. All declarative — predicates over observed state, never writes.
+  signatures. All declarative: predicates over observed state, never writes.
 - **RUNTIME (engine/app does):** the app issues reads/scans (I/O) and supplies
   observed values; the engine *evaluates* predicates and resolves; the app decides
   on ambiguity (asks the user), and performs mode/connection switches.
-- Rule: **manifest declares; engine evaluates; app does I/O.** The engine is pure —
+- Rule: **manifest declares; engine evaluates; app does I/O.** The engine is pure:
   `operation_available(...observed)` / `detect_mode(...observed)` take values the
   client already read. `detect_mode → None` → app shows a picker from `modes_for`.
 
@@ -456,7 +456,7 @@ Keep the `supports_operation` shim through steps 1–3.
 each `(connection, mode)` + under which runtime prerequisites, the `Auto`
 resolution behavior, and the eeprom save/restore field map. Output feeds the
 `protocol`/`modes`/`connections`/`capability`/`identification` data. Stays in the
-**safe → settings-write** risk tiers — no RAM/firmware tier.
+**safe → settings-write** risk tiers; no RAM/firmware tier.
 
 ## 8. Verification
 Engine unit tests:
@@ -478,27 +478,27 @@ Engine unit tests:
   CI lint greps `Sources/` for mode hex literals.
 
 ## 9. Open decisions (build-time; not blockers)
-- **#A — Data loading / OTA path for the FFI** (bundled baseline + signed bundle;
+- **#A: Data loading / OTA path for the FFI** (bundled baseline + signed bundle;
   file tree vs embedded on iOS).
-- **#B — Predicate leaf set** — `eq/ne/lt/gt/mask` cover known cases; add `inRange`/
+- **#B: Predicate leaf set.** `eq/ne/lt/gt/mask` cover known cases; add `inRange`/
   others only when a real camera needs them (closed grammar, never a script).
-- **#C — Platform filtering placement** (`platforms:` on connection vs client set).
-- **#D — Top-level key name** `connections:` (chosen) vs DESIGN's `transports:` —
+- **#C: Platform filtering placement** (`platforms:` on connection vs client set).
+- **#D: Top-level key name** `connections:` (chosen) vs DESIGN's `transports:`,
   cosmetic; reconcile DESIGN.
-- **#E — `entries` graph placement** — per-connection (as sketched) vs a top-level
+- **#E: `entries` graph placement.** Per-connection (as sketched) vs a top-level
   graph referencing connections; confirm once the survey shows how transitions
   actually cluster.
 
 ## Critical files
-- `crates/camera-manifest/src/model.rs` — flat predicate-gated catalog: `modes`
+- `crates/camera-manifest/src/model.rs`: flat predicate-gated catalog: `modes`
   table, `connections` table, `requires`/`detect` predicate types, sections; → moves
   to `camera-config`.
-- `crates/camera-manifest/src/query.rs` — funnel + orthogonal-coordinate API +
+- `crates/camera-manifest/src/query.rs`: funnel + orthogonal-coordinate API +
   predicate evaluator.
-- `crates/camera-manifest/src/lib.rs` — `ConfigStore`/`resolve()` + identification
+- `crates/camera-manifest/src/lib.rs`: `ConfigStore`/`resolve()` + identification
   index.
-- `packages/protocol-spec/fuji/gfx100ii/fw2.30.yaml` — first to grow the orthogonal
+- `packages/protocol-spec/fuji/gfx100ii/fw2.30.yaml`: first to grow the orthogonal
   schema; → moves to `camera-config-data`.
-- `crates/camera-protocol-ffi/src/lib.rs` — FFI re-export + data load.
-- `DESIGN.md` — reconcile `transports:`→`connections:`, orthogonal mode axis,
+- `crates/camera-protocol-ffi/src/lib.rs`: FFI re-export + data load.
+- `DESIGN.md`: reconcile `transports:`→`connections:`, orthogonal mode axis,
   predicate gating.
