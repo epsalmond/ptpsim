@@ -140,10 +140,11 @@ fn xa7_manifest_contains_only_public_relative_evidence_paths() {
     assert!(!evidence_path.starts_with('~'));
 }
 
-/// The legacy vendor mobile app continues past read and CCCD failures, so the
-/// registration plan tolerates them too. The strict steps are the connection
-/// setup, the pairing-key and name writes, the peripheral-name step, and the
-/// serial and SSID reads, each with a comment in the index giving its reason.
+/// The legacy vendor mobile app continues past read and CCCD error callbacks,
+/// so the registration plan tolerates them too. The strict steps are the
+/// connection setup, the pairing-key and name writes, the peripheral-name
+/// step, the serial and SSID reads, and the AP-state subscribe, each with a
+/// comment in the index giving its reason.
 #[test]
 fn xa7_registration_tolerates_what_the_legacy_app_tolerates() {
     let pair = xa7_plan_steps("legacy-app-pair");
@@ -160,21 +161,20 @@ fn xa7_registration_tolerates_what_the_legacy_app_tolerates() {
             "steps[8].bleWrite",
             "steps[9].bleRead",
             "steps[10].bleRead",
+            "steps[23].bleSubscribe",
         ]
     );
-    for (index, verb, capture) in [
-        (11, "bleRead", Some("reservationAfterShooting")),
-        (12, "bleRead", Some("pairedSmartDeviceCount")),
-        (13, "bleRead", Some("firmware")),
-        (23, "bleSubscribe", None),
-        (28, "bleRead", Some("apState")),
+    for (index, capture) in [
+        (11, "reservationAfterShooting"),
+        (12, "pairedSmartDeviceCount"),
+        (13, "firmware"),
+        (28, "apState"),
     ] {
-        let step = &pair[index];
-        assert_eq!(step.verb_name(), verb, "steps[{index}]");
-        assert!(step.options().tolerant, "steps[{index}] is tolerant");
-        if let (Step::BleRead(read), Some(capture)) = (step, capture) {
-            assert_eq!(read.capture_as, capture, "steps[{index}] capture");
-        }
+        let Step::BleRead(read) = &pair[index] else {
+            panic!("steps[{index}] is a bleRead");
+        };
+        assert!(read.opts.tolerant, "steps[{index}] is tolerant");
+        assert_eq!(read.capture_as, capture, "steps[{index}] capture");
     }
     assert!(
         pair.iter().all(|step| step.options().confirms.is_none()),

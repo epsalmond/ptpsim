@@ -162,8 +162,8 @@ fn ap_state_two_keeps_the_poll_waiting() {
 
 /// State 3 means reserved or automatic transfer in the legacy vendor mobile
 /// app, which ends the launch as not connectable. The walk surfaces it as
-/// `ConditionRejected`; consumers present it as the camera being busy with an
-/// automatic transfer, not as a refusal.
+/// `ConditionRejected`; consumers present it as the camera being in its
+/// reserved (automatic) transfer state, not as a refusal.
 #[test]
 fn ap_state_three_ends_the_launch_as_not_connectable() {
     let view = xa7();
@@ -211,14 +211,16 @@ const REGISTRATION_CHARACTERISTICS: &[(&str, Option<&[u8]>)] = &[
 /// An omitted key is left out of the catalog, as on a body that does not
 /// expose it, so reads, writes and subscribes to it all fail.
 fn registration_responder(ble: &FamilyBleBlock, omit: &[&str]) -> BleResponder {
-    registration_responder_with(ble, omit, &[])
+    registration_responder_with(ble, omit, &[], &[])
 }
 
-/// As [`registration_responder`], plus `extra` writable characteristics given
-/// by UUID.
+/// As [`registration_responder`]. An `unserved` key stays in the catalog, so
+/// writes and subscribes to it succeed, but its reads fail. `extra` adds
+/// writable characteristics given by UUID.
 fn registration_responder_with(
     ble: &FamilyBleBlock,
     omit: &[&str],
+    unserved: &[&str],
     extra: &[&str],
 ) -> BleResponder {
     let mut catalog: Vec<String> = extra.iter().map(|uuid| uuid.to_string()).collect();
@@ -228,6 +230,9 @@ fn registration_responder_with(
             continue;
         }
         catalog.push(uuid(ble, key));
+        if unserved.contains(key) {
+            continue;
+        }
         if let Some(bytes) = bytes {
             served.push((uuid(ble, key), *bytes));
         }
@@ -259,14 +264,17 @@ fn registration_steps(ble: &FamilyBleBlock) -> Vec<camera_config::index::Step> {
 fn registration_tolerates_missing_optional_reads_like_the_legacy_app() {
     let view = xa7();
     let ble = view.ble.as_ref().unwrap();
-    let mut responder = registration_responder(
+    // AP state stays subscribable (the subscribe is strict) but its read
+    // fails, so only the tail read is tolerated.
+    let mut responder = registration_responder_with(
         ble,
         &[
             "reservationAfterShooting",
             "pairedSmartDeviceCount",
             "firmwareRevisionString",
-            "apState",
         ],
+        &["apState"],
+        &[],
     );
     let outcome = walk_registration(&registration_steps(ble), &mut responder)
         .expect("registration completes past the tolerated reads");
@@ -276,7 +284,6 @@ fn registration_tolerates_missing_optional_reads_like_the_legacy_app() {
             "steps[11].bleRead",
             "steps[12].bleRead",
             "steps[13].bleRead",
-            "steps[23].bleSubscribe",
             "steps[28].bleRead",
         ]
     );
@@ -312,6 +319,35 @@ fn registration_fails_without_the_serial_or_ssid() {
         };
         assert_eq!(error.step, step, "{omit}");
     }
+}
+
+/// The legacy vendor mobile app never marks the link ready when its remaining
+/// CCCD writes all fail, so a link that drops during registration must fail
+/// the walk rather than let every later step fail tolerantly. The responder
+/// has no link-drop switch, so the drop is modelled by exposing only the
+/// characteristics steps 0 to 10 use: every later read and every later
+/// subscribe except the SSID one then fails, as on a dropped link.
+#[test]
+fn registration_fails_when_the_link_drops_after_the_ssid_read() {
+    let view = xa7();
+    let ble = view.ble.as_ref().unwrap();
+    let kept = [
+        "pairingKey",
+        "deviceNameString",
+        "connectedDeviceBleProtocolVersion",
+        "protectedSerialString",
+        "cameraSSIDNameString",
+    ];
+    let dropped: Vec<&str> = REGISTRATION_CHARACTERISTICS
+        .iter()
+        .map(|(key, _)| *key)
+        .filter(|key| !kept.contains(key))
+        .collect();
+    let mut responder = registration_responder(ble, &dropped);
+    let Err(error) = walk_registration(&registration_steps(ble), &mut responder) else {
+        panic!("a dropped link must not complete registration");
+    };
+    assert_eq!(error.step, "steps[23].bleSubscribe");
 }
 
 /// The legacy vendor mobile app sends its second name write when the GAP name
@@ -356,8 +392,10 @@ fn registration_sends_the_second_name_write_between_the_name_and_serial() {
 /// X-A7, because the event that ends the camera's pairing screen is unknown
 /// (#355). Client traffic (the name writes, a local-time write, the tail reads,
 /// repeated serial reads, a reconnect walk) must not change what the simulated
-/// camera serves or make it send anything. Otherwise the simulator would teach
-/// clients a registration cue that no evidence supports.
+/// camera serves or make it send anything. The generic responder, with no
+/// linked engine, must keep its reads unchanged and send nothing under this
+/// client traffic, so no X-A7 test can rely on a write-triggered registration
+/// cue that no evidence supports.
 #[test]
 fn no_client_traffic_changes_simulated_registration_state() {
     // The legacy vendor mobile app's local-time characteristic. The manifest
@@ -365,7 +403,7 @@ fn no_client_traffic_changes_simulated_registration_state() {
     const LOCAL_TIME: &str = "B9BFD37F-CCAD-4D36-A1EE-018E792B3EDF";
     let view = xa7();
     let ble = view.ble.as_ref().unwrap();
-    let mut responder = registration_responder_with(ble, &[], &[LOCAL_TIME]);
+    let mut responder = registration_responder_with(ble, &[], &[], &[LOCAL_TIME]);
 
     let first = walk_registration(&registration_steps(ble), &mut responder)
         .expect("registration completes");
@@ -414,4 +452,11 @@ fn no_client_traffic_changes_simulated_registration_state() {
         again.summary.confirm_outcome,
         camera_sim::EstablishmentConfirmOutcome::NotDeclared
     );
+    for (key, _) in REGISTRATION_CHARACTERISTICS {
+        assert_eq!(
+            responder.take_notification(&uuid(ble, key)),
+            None,
+            "{key} sends nothing after the reconnect walk"
+        );
+    }
 }
