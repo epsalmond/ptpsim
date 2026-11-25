@@ -1744,6 +1744,140 @@ fn d246_stills_video_selector_keeps_live_view_streaming() {
     );
 }
 
+fn response_code(reply: &Reply) -> u16 {
+    match reply {
+        Reply::Response(r) => r.code,
+        Reply::Data { response, .. } | Reply::DataStream { response, .. } => response.code,
+        other => panic!("expected a PTP response, got {other:?}"),
+    }
+}
+
+/// Write the one-byte `0xD246` stills/video selector.
+fn write_d246(e: &mut Engine, tid: u32, value: u8) {
+    assert_ok(&e.on_operation(&req(0x1016, tid, vec![0xd246]), Some(&[value])));
+}
+
+/// Open a session and enter app live view the way the cold entry does:
+/// function mode 0x16, then InitiateOpenCapture.
+fn app_live_view() -> Engine {
+    let mut e = engine();
+    assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None));
+    write_u16(&mut e, 2, 0xdf01, 0x16);
+    assert_ok(&e.on_operation(&req(0x101c, 3, vec![]), None));
+    assert_eq!(e.state().active_mode.as_deref(), Some("shooting/stills"));
+    assert!(matches!(e.phase(), Phase::Streaming));
+    e
+}
+
+#[test]
+fn app_d246_selector_detects_video_and_keeps_streaming() {
+    // #570: on the app connection, D246=1 with function mode 0x16 is
+    // shooting/video. The change keeps the live-view phase.
+    let mut e = app_live_view();
+    write_d246(&mut e, 10, 1);
+    assert_eq!(e.state().active_mode.as_deref(), Some("shooting/video"));
+    assert!(matches!(e.phase(), Phase::Streaming));
+
+    // The captured pair: 0x9020(0, 0), then 0x9021 with the 0x9020
+    // transaction id. Both answer a bare OK. The camera's 0xC004 and 0x400D
+    // events are not modeled, so events are not asserted here.
+    let open = e.on_operation(&req(0x9020, 11, vec![0, 0]), None);
+    assert!(matches!(open, Reply::Response(ref r) if r.code == 0x2001));
+    let close = e.on_operation(&req(0x9021, 12, vec![11]), None);
+    assert!(matches!(close, Reply::Response(ref r) if r.code == 0x2001));
+    assert!(matches!(e.phase(), Phase::Streaming));
+
+    // Back to stills: the postview take-cycle works again.
+    write_d246(&mut e, 13, 0);
+    assert_eq!(e.state().active_mode.as_deref(), Some("shooting/stills"));
+    assert!(matches!(e.phase(), Phase::Streaming));
+    assert_ok(&e.on_operation(&req(0x100e, 14, vec![0, 0]), None));
+    assert!(
+        !data_of(e.on_operation(&req(0x9022, 15, vec![]), None)).is_empty(),
+        "0x100E armed the postview read"
+    );
+}
+
+#[test]
+fn app_video_answers_carried_rows_and_refuses_stills_only_rows() {
+    let mut e = app_live_view();
+    write_d246(&mut e, 10, 1);
+    assert_eq!(e.state().active_mode.as_deref(), Some("shooting/video"));
+
+    // Rows carried into video from current behavior, without observation.
+    let mut tid = 20;
+    for (code, params) in [
+        (0x9022u16, vec![]),
+        (0x902c, vec![1]),
+        (0x902d, vec![1]),
+        (0x902e, vec![1]),
+    ] {
+        tid += 1;
+        assert_eq!(
+            response_code(&e.on_operation(&req(code, tid, params), None)),
+            0x2001,
+            "{code:#06x} is carried into app video"
+        );
+    }
+
+    // Stills-only rows. The video descriptor snapshot omits 0xD17C, which
+    // 0x9026 writes, so the AF pair stays out of video. The shared 0x100E row
+    // also stays stills-only, so app video refuses it. That refusal is an
+    // unevidenced consequence of the row being shared with wireless-tether,
+    // not an observed camera refusal.
+    for (code, params) in [
+        (0x9026u16, vec![0x0403_0102]),
+        (0x9027, vec![]),
+        (0x100e, vec![0, 0]),
+    ] {
+        tid += 1;
+        assert_eq!(
+            response_code(&e.on_operation(&req(code, tid, params), None)),
+            0x2005,
+            "{code:#06x} is stills-only in app video"
+        );
+    }
+}
+
+#[test]
+fn d246_video_detection_is_scoped_to_the_app_connection() {
+    // Regression guard: wireless-tether keeps stills detection whatever D246
+    // holds. It passes before and after #570.
+    let mut e = engine();
+    e.bind_connection("wireless-tether");
+    assert_ok(&e.on_operation(&req(0x1002, 1, vec![1]), None));
+    write_u16(&mut e, 2, 0xdf01, 0x16);
+    write_d246(&mut e, 3, 1);
+    assert_eq!(e.state().active_mode.as_deref(), Some("shooting/stills"));
+}
+
+#[test]
+fn still_iso_write_in_app_video_is_stored_raw() {
+    // The app stillIso value profile is scoped to shooting/stills. In app
+    // video no profile matches, so the written value is stored unchanged.
+    let mut e = app_live_view();
+    write_u32(&mut e, 10, 0xd02a, 50);
+    assert_eq!(read_u32(&mut e, 11, 0xd02a), 80, "stills normalizes");
+    write_d246(&mut e, 12, 1);
+    assert_eq!(e.state().active_mode.as_deref(), Some("shooting/video"));
+    write_u32(&mut e, 13, 0xd02a, 50);
+    assert_eq!(read_u32(&mut e, 14, 0xd02a), 50, "video stores raw");
+}
+
+#[test]
+fn d246_left_from_a_prior_session_detects_video_on_the_next_live_view_entry() {
+    // OpenSession does not reset property values, so a selector left at 1 by
+    // an earlier session selects video again. This follows from the property
+    // model, not from camera evidence.
+    let mut e = app_live_view();
+    write_d246(&mut e, 10, 1);
+    assert_ok(&e.on_operation(&req(0x1003, 11, vec![]), None));
+    assert_ok(&e.on_operation(&req(0x1002, 12, vec![1]), None));
+    assert_eq!(e.state().active_mode, None);
+    write_u16(&mut e, 13, 0xdf01, 0x16);
+    assert_eq!(e.state().active_mode.as_deref(), Some("shooting/video"));
+}
+
 /// An engine whose card holds `count` small JPGs (each one 12 MiB chunk).
 fn engine_with_jpegs(count: usize) -> Engine {
     engine_with_jpegs_and_handles(count).0
