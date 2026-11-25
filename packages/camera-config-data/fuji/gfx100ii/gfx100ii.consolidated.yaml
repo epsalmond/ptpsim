@@ -77,6 +77,10 @@ evidence:
     kind: wire-capture
     path: evidence/APP_PROPERTY_DESCRIPTOR_SNAPSHOTS.md
     date: 2026-05-18
+  wireAppVideoSelectorOps20260518:
+    kind: wire-capture
+    path: evidence/APP_VIDEO_SELECTOR_OPS_20260518.md
+    date: 2026-05-18
   wireAutoImageTransfer:
     kind: wire-capture
     path: evidence/AUTO_TRANSFER_OBSERVATIONS.md
@@ -2986,6 +2990,7 @@ operations:
     property: null
     modes:
     - shooting/stills
+    - shooting/video
     connections:
     - app
     requires: null
@@ -2993,6 +2998,11 @@ operations:
     emits: []
     evidence:
     - docFujiPtpPropReference
+    - wireAppVideoSelectorOps20260518
+    observedScopes:
+    - connection: app
+      mode: shooting/video
+      state: open-capture
   '0x9021':
     name: FujiVideoPreviewCloseHypothesis
     owner: fuji-vendor
@@ -3003,6 +3013,7 @@ operations:
     property: null
     modes:
     - shooting/stills
+    - shooting/video
     connections:
     - app
     requires: null
@@ -3010,6 +3021,11 @@ operations:
     emits: []
     evidence:
     - docFujiPtpPropReference
+    - wireAppVideoSelectorOps20260518
+    observedScopes:
+    - connection: app
+      mode: shooting/video
+      state: open-capture
   '0x9022':
     name: FujiVendor9022
     owner: fuji-vendor
@@ -3020,6 +3036,7 @@ operations:
     property: null
     modes:
     - shooting/stills
+    - shooting/video
     connections:
     - app
     requires: null
@@ -3137,6 +3154,7 @@ operations:
     property: '0xd240'
     modes:
     - shooting/stills
+    - shooting/video
     connections:
     - app
     requires: null
@@ -3154,6 +3172,7 @@ operations:
     property: '0x5007'
     modes:
     - shooting/stills
+    - shooting/video
     connections:
     - app
     requires: null
@@ -3171,6 +3190,7 @@ operations:
     property: '0x5010'
     modes:
     - shooting/stills
+    - shooting/video
     connections:
     - app
     requires: null
@@ -11465,6 +11485,7 @@ properties:
       '1': video
     evidence:
     - docFujiPtpPropReference
+    - wireAppVideoSelectorOps20260518
   # unverified: static client identity; validate camera support, type and effects.
   '0xd247':
     name: movieFrameRate
@@ -16614,7 +16635,15 @@ modes:
     detect: null
   shooting/video:
     capabilities: []
-    detect: null
+    detect:
+      all:
+      - prop: '0xdf01'
+        eq: 22
+      - prop: '0xd246'
+        eq: 1
+    detectConnections:
+    - app
+    phase: liveView
   tether-auto:
     capabilities: []
     detect: null
