@@ -104,6 +104,11 @@ val store = ConfigStore.fromManufacturerIndex(
 )
 ```
 
+Android exposes the GAP service, so an Android `BleExecutorTransport` should
+answer `peripheralName` with a GATT read of Device Name (0x2A00) rather than
+the cached device name. That read is what the reference app sends
+(`docs/MANIFEST_SCHEMA.md` §11.4b).
+
 The manifest YAMLs are not in the AAR. CI attaches
 `camera-config-data-<sha8>.tar.gz` only to the releases of `main` commits that
 select the manifest-data job (conditions in `docs/INTEGRATION.md` §5), not to

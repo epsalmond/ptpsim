@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+use camera_config::index::{ResolvedManufacturerIndex, Step};
 use camera_config::{CameraManifest, ModeEntryExecution, SocketRole, WireFraming};
 
 fn body_text() -> String {
@@ -8,6 +9,35 @@ fn body_text() -> String {
         .join("../../packages/camera-config-data/fuji/xa7/xa7.yaml");
     std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
+}
+
+fn xa7_plan_steps(mechanism: &str) -> Vec<Step> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../packages/camera-config-data/fuji/index.yaml");
+    let yaml = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+    ResolvedManufacturerIndex::from_yaml(&yaml)
+        .expect("Fuji index loads")
+        .models
+        .into_iter()
+        .find(|model| model.id == "xa7")
+        .expect("X-A7 model")
+        .ble
+        .expect("X-A7 BLE block")
+        .establishment(mechanism)
+        .unwrap_or_else(|| panic!("X-A7 {mechanism} plan"))
+        .steps
+        .clone()
+}
+
+/// The step paths of a plan's strict (non-tolerant) steps.
+fn strict_paths(steps: &[Step]) -> Vec<String> {
+    steps
+        .iter()
+        .enumerate()
+        .filter(|(_, step)| !step.options().tolerant)
+        .map(|(index, step)| format!("steps[{index}].{}", step.verb_name()))
+        .collect()
 }
 
 #[test]
@@ -108,4 +138,54 @@ fn xa7_manifest_contains_only_public_relative_evidence_paths() {
     assert_eq!(evidence_path, "evidence/LEGACY_APP_4_10_2.md");
     assert!(PathBuf::from(evidence_path).is_relative());
     assert!(!evidence_path.starts_with('~'));
+}
+
+/// The legacy vendor mobile app continues past read and CCCD error callbacks,
+/// so the registration plan tolerates them too. The strict steps are the
+/// connection setup, the pairing-key and name writes, the peripheral-name
+/// step, the serial and SSID reads, and the AP-state subscribe and tail
+/// AP-state read that guard against a dropped link, each with a comment in
+/// the index giving its reason.
+#[test]
+fn xa7_registration_tolerates_what_the_legacy_app_tolerates() {
+    let pair = xa7_plan_steps("legacy-app-pair");
+    assert_eq!(pair.len(), 30, "the step count is unchanged");
+    assert_eq!(
+        strict_paths(&pair),
+        [
+            "steps[0].bleConnect",
+            "steps[1].bleDelay",
+            "steps[3].bleDiscoverServices",
+            "steps[4].bleWrite",
+            "steps[5].bleWrite",
+            "steps[7].blePeripheralName",
+            "steps[8].bleWrite",
+            "steps[9].bleRead",
+            "steps[10].bleRead",
+            "steps[23].bleSubscribe",
+            "steps[28].bleRead",
+        ]
+    );
+    for (index, capture) in [
+        (11, "reservationAfterShooting"),
+        (12, "pairedSmartDeviceCount"),
+        (13, "firmware"),
+    ] {
+        let Step::BleRead(read) = &pair[index] else {
+            panic!("steps[{index}] is a bleRead");
+        };
+        assert!(read.opts.tolerant, "steps[{index}] is tolerant");
+        assert_eq!(read.capture_as, capture, "steps[{index}] capture");
+    }
+    assert!(
+        pair.iter().all(|step| step.options().confirms.is_none()),
+        "no step claims to confirm registration (#355)"
+    );
+
+    let reconnect = xa7_plan_steps("legacy-app-reconnect");
+    assert_eq!(
+        format!("{reconnect:?}"),
+        format!("{pair:?}"),
+        "reconnect replays the registration steps"
+    );
 }

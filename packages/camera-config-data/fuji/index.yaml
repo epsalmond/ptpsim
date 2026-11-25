@@ -571,8 +571,13 @@ families:
             - bleSubscribe: { gatt: iptcSetting,           timeoutMs: 3000, tolerant: true }
             - bleSubscribe: { gatt: locationSyncCycle,     timeoutMs: 3000, tolerant: true }
 
-        # Legacy mobile app 4.10.2 registration for the X-A7. Its queue, MTU
-        # pacing, CCCD modes, and AP states differ from the family path above.
+        # X-A7 registration. Mirrors the wire behavior of the legacy vendor
+        # mobile app 4.10.2 as recorded in xa7/evidence/LEGACY_APP_4_10_2.md.
+        # Which event ends the camera's pairing screen is unknown (#355), so no
+        # step is marked `confirms: registration` and a completed walk does not
+        # show that the camera accepted the registration. A read or CCCD error
+        # callback does not stop the app's registration, so those steps are
+        # tolerant unless a comment gives the reason they are strict.
         legacy-app-pair:
           mechanism: legacy-app-pair
           persist: [pairingKeyBytes, style, shortSerial, cameraSerial, ssid]
@@ -596,15 +601,23 @@ families:
                 gatt: connectedDeviceBleProtocolVersion
                 value: { literal: "0200" }
                 tolerant: true
+            # Stands in for the app's 0x2A00 read on hosts without GAP access
+            # (schema 11.4b). Strict, unlike the app: the app sends the second
+            # name write below only after a successful name read.
             - blePeripheralName: { captureAs: cameraName }
             - bleWrite:
                 gatt: deviceNameString
                 value: { runtime: terminalName, encoding: utf8, transform: { appendNul: {} } }
+            # Strict, unlike the app: on iOS this read starts bonding, and the
+            # serial is persisted.
             - bleRead: { gatt: protectedSerialString, encoding: utf8-cstring, captureAs: cameraSerial }
+            # Strict, unlike the app: the SSID is persisted and drives the
+            # Wi-Fi join after a function launch.
             - bleRead: { gatt: cameraSSIDNameString, encoding: utf8-cstring, captureAs: ssid }
-            - bleRead: { gatt: reservationAfterShooting, encoding: bytes, captureAs: reservationAfterShooting }
-            - bleRead: { gatt: pairedSmartDeviceCount, encoding: bytes, captureAs: pairedSmartDeviceCount }
-            - bleRead: { gatt: firmwareRevisionString, encoding: utf8-cstring, captureAs: firmware }
+            # The app uses the reservation setting only for analytics.
+            - bleRead: { gatt: reservationAfterShooting, encoding: bytes, captureAs: reservationAfterShooting, tolerant: true }
+            - bleRead: { gatt: pairedSmartDeviceCount, encoding: bytes, captureAs: pairedSmartDeviceCount, tolerant: true }
+            - bleRead: { gatt: firmwareRevisionString, encoding: utf8-cstring, captureAs: firmware, tolerant: true }
             - bleRead: { gatt: lensProductName, encoding: utf8-cstring, captureAs: lensProductName, tolerant: true }
             - bleRead: { gatt: lensFirmwareVersion, encoding: utf8-cstring, captureAs: lensFirmware, tolerant: true }
             - bleRead: { gatt: wakeupMode, encoding: bytes, captureAs: wakeupMode, tolerant: true }
@@ -614,14 +627,28 @@ families:
             - bleRead: { gatt: movieButton, encoding: bytes, captureAs: movieButton, tolerant: true }
             - bleRead: { gatt: cameraBleProtocolVersion, encoding: u16-le, captureAs: cameraBleProtocolVersion, tolerant: true }
             - bleSubscribe: { gatt: cameraSSIDNameString, timeoutMs: 3000, mode: indicate, tolerant: true }
+            # Strict, unlike a single CCCD in the app: the app never marks the
+            # link ready when the remaining CCCD writes fail without a
+            # callback, as on a dropped link. A tolerant step cannot express
+            # that, so this one keeps a walk from completing on a dropped link.
             - bleSubscribe: { gatt: apState, timeoutMs: 3000, mode: indicate }
             - bleSubscribe: { gatt: transferState, timeoutMs: 3000, mode: indicate, tolerant: true }
             - bleSubscribe: { gatt: dateSyncState, timeoutMs: 3000, mode: notify, tolerant: true }
             - bleSubscribe: { gatt: locationSyncState, timeoutMs: 3000, mode: notify, tolerant: true }
             - bleSubscribe: { gatt: firmwareUpdateState, timeoutMs: 3000, mode: indicate, tolerant: true }
+            # The app issues these two reads in parallel with marking the link
+            # ready and does not wait for them. The AP-state read stays strict
+            # anyway, so a walk cannot complete on a link that dropped after
+            # the AP-state subscribe. With the subscribe, a drop anywhere up to
+            # this read fails the walk; only a drop during the transfer-state
+            # read, the last step, can still complete.
             - bleRead: { gatt: apState, encoding: u16-le, captureAs: apState }
             - bleRead: { gatt: transferState, encoding: u16-le, captureAs: transferState, tolerant: true }
 
+        # X-A7 saved-key reconnect. The legacy vendor mobile app replays the
+        # same registration queue with the saved key, so this plan shares the
+        # registration steps above. Which event ends the camera's pairing
+        # screen is unknown (#355); no step is marked `confirms: registration`.
         legacy-app-reconnect:
           mechanism: legacy-app-reconnect
           persist: [pairingKeyBytes, style, shortSerial, cameraSerial, ssid]
@@ -648,12 +675,28 @@ families:
               interactionRequired: false
               executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 6 }
           steps:
+            # The legacy vendor mobile app writes the launch on the open
+            # registration link and adds no subscribe. This plan connects,
+            # discovers, and subscribes first so it can run on its own; on an
+            # open link the first two steps are checkpoints, and the subscribe
+            # rewrites the AP-state CCCD.
             - bleConnect: {}
             - bleDiscoverServices: {}
             - bleSubscribe: { gatt: apState, timeoutMs: 3000, mode: indicate }
             - bleWrite:
                 gatt: functionLaunchRequest
                 value: { runtime: launchMode, encoding: u16-le }
+            # AP state is a u16-le. The app reads it as 0 not launched or
+            # failed, 1 launched and connectable, 2 launching, and 3 reserved
+            # or automatic transfer (the launch ends as not connectable).
+            # The app waits for an AP-state indication with no timeout. This
+            # plan polls by read instead, because two indication waits on an
+            # X-A7 received nothing while reads worked (#412). One read cannot
+            # tell "not launched yet" from "launch failed", so 0 keeps the poll
+            # waiting, as 2 does; 3 ends the walk with ConditionRejected. The
+            # 1000 ms interval and 45000 ms timeout are client policy. The poll
+            # is unverified on hardware: its one recorded run timed out with no
+            # AP-state change (#355).
             - bleAwaitUntil:
                 source: { read: apState }
                 capture: { at: 0, length: 2, encoding: u16-le, name: apState }

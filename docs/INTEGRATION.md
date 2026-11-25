@@ -556,9 +556,10 @@ capture/transform/predicate evaluation, the retry ladder, wall-clock budgets,
   pend indefinitely; the executor races it against the step's manifest
   `timeoutMs`. `peripheralName` returns the bound peripheral's platform name
   as UTF-8 with any NUL terminator removed (`CBPeripheral.name` on
-  CoreBluetooth, which hides the GAP service; a GATT 0x2A00 read is fine on
-  stacks that expose it). An unavailable name is a transport error, never an
-  empty string.
+  CoreBluetooth, which hides the GAP service). A host whose stack exposes the
+  GAP service should answer it with a GATT 0x2A00 read, which is what the
+  reference app sends (§11.4b). An unavailable name is a transport error,
+  never an empty string.
 - `UsbExecutorTransport` (a `with_foreign` async trait): raw USB I/O only,
   for `usb` (raw) connection establishments (§11.29). `claimInterface` /
   `bulkOut` / `bulkIn` / `nextInterruptEvent` / `releaseAndClose` / `sleep`.
@@ -634,6 +635,38 @@ loader-visible `EstablishmentPlan.steps` themselves receive the same marker as
 `StepOptions.confirms` and must apply these semantics. The loader permits the
 marker only on `bleRead`, `bleNotify`, and `bleAwaitUntil`, including inside a
 one-shot `if` branch, and rejects duplicate markers.
+
+The X-A7 `legacy-app-pair` and `legacy-app-reconnect` plans declare no marker,
+so their `confirmOutcome` is `NotDeclared`. A completed walk does not show that
+the camera accepted the registration; which event ends the X-A7 pairing screen
+is unknown (#355). Several of their steps are tolerant because the legacy
+vendor mobile app continues past the same failures. Check `toleratedStepPaths`
+before treating the body as fully registered. When one of these paths is
+tolerated, this is what is missing:
+
+| path | missing when tolerated |
+|---|---|
+| `steps[11].bleRead` | `reservationAfterShooting`. The app uses it only for analytics. |
+| `steps[12].bleRead` | `pairedSmartDeviceCount`. |
+| `steps[13].bleRead` | `firmware`, the 0x2A26 firmware version string. |
+
+Other tolerant steps cover optional writes, reads, and subscribes that the app
+treats the same way. The serial (`steps[9]`) and SSID (`steps[10]`)
+reads are strict, so a walk without them fails. Two later steps are strict
+as guards against a dropped link. The AP-state subscribe (`steps[23]`) is
+strict because the app never marks the link ready when its remaining CCCD
+writes fail without a callback, as on a dropped link. The tail AP-state read
+(`steps[28]`) is strict because the app marks the link ready without waiting
+for it, so the manifest needs a later strict step to catch a drop after the
+subscribe. A link that drops anywhere up to `steps[28]` fails the walk. Only a
+drop during the final transfer-state read (`steps[29]`, tolerant, the last
+step) can still complete.
+
+`legacy-app-establish-wifi-ap` fails with `ConditionRejected` when the camera
+reports AP state 3. In the legacy vendor mobile app, state 3 means reserved or
+automatic transfer, and the launch ends as not connectable. Present it as the
+camera being in its reserved (automatic) transfer state, so it cannot start
+this function now, rather than as a refusal of the request.
 
 ### 9.4 Walking PTP entry and action plans
 
@@ -895,7 +928,7 @@ called out above.
 | `bleRequestMtu` | request ATT MTU `requestedMtu` before GATT traffic (no call where the platform has no request API; CoreBluetooth negotiates on its own). When the manifest declares `minimumMtu`, fail on any platform when the negotiated MTU is below it; with none declared, succeed at any negotiated MTU. |
 | `bleDiscoverServices` | explicit service-discovery state transition. If your stack auto-discovers, complete when discovery has completed; don't re-trigger. Discovery timeout is your policy. |
 | `bleRead` | read the resolved UUID, apply the `transform` chain to the wire bytes (§11.13; empty chain = no-op), decode per `encoding`, store in scope under `captureAs`. |
-| `blePeripheralName` | store the connected peripheral's platform name in scope under `captureAs` (UTF-8, any NUL terminator removed). Use `CBPeripheral.name` on CoreBluetooth, which filters the GAP service from discovery, so a GATT 0x2A00 read cannot succeed there; a 0x2A00 read is fine on stacks that expose it. An unavailable name is a step failure, never an empty string. |
+| `blePeripheralName` | store the connected peripheral's platform name in scope under `captureAs` (UTF-8, any NUL terminator removed). Use `CBPeripheral.name` on CoreBluetooth, which filters the GAP service from discovery, so a GATT 0x2A00 read cannot succeed there. Hosts whose stack exposes the GAP service should use a GATT 0x2A00 read, which is what the reference app sends (§11.4b). An unavailable name is a step failure, never an empty string. |
 | `bleWrite` | resolve `value` → bytes (see StepValue table), write. Optional `notificationFence` names a subscribed GATT characteristic whose buffered prefix the transport atomically fences immediately before issuing this write; notifications caused by the write remain consumable. |
 | `bleWriteChunk` | frame and write one manifest-declared window from a runtime blob, using the captured chunk index, frame fields, size, sentinel index, and optional checksum policy (§11.2a). |
 | `bleSubscribe` | enable CCCD on the resolved UUID (`mode`: notify/indicate; CoreBluetooth maps both to `setNotifyValue(true)`); success on descriptor-write ack; no notification payload is waited for. Use for CCCD-only finalization rounds where the camera advances on the write callback itself. |
