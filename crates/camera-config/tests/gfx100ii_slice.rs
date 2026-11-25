@@ -282,14 +282,17 @@ fn camera_initiated_transfer_references_are_complete() {
 fn mode_detect_from_function_mode() {
     let m = gfx();
     assert_eq!(
-        m.detect_mode(&PropView::new().with(0xdf01, 0x16)),
+        m.detect_mode("app", &PropView::new().with(0xdf01, 0x16)),
         Some("shooting/stills")
     );
     assert_eq!(
-        m.detect_mode(&PropView::new().with(0xdf01, 0x14)),
+        m.detect_mode("app", &PropView::new().with(0xdf01, 0x14)),
         Some("image-transfer")
     );
-    assert_eq!(m.detect_mode(&PropView::new().with(0xdf01, 0x99)), None);
+    assert_eq!(
+        m.detect_mode("app", &PropView::new().with(0xdf01, 0x99)),
+        None
+    );
 }
 
 #[test]

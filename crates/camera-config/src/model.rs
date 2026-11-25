@@ -1225,6 +1225,11 @@ pub struct Mode {
     pub capabilities: Vec<String>,
     #[serde(default)]
     pub detect: Option<Predicate>,
+    /// Connection ids on which `detect` applies. Empty means every connection.
+    /// A mode scoped to the session's connection outranks an unscoped mode
+    /// when both predicates hold (MANIFEST_SCHEMA §11.34).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub detect_connections: Vec<String>,
     /// Simulator workflow phase this mode corresponds to (e.g. `imageImport`,
     /// `liveView`). When mode detection selects this mode, the engine enters
     /// the declared phase. Absent = detection changes the mode but not the

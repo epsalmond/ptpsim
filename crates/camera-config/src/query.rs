@@ -527,13 +527,26 @@ impl CameraManifest {
             .collect()
     }
 
-    /// Which mode does `observed` put the camera in? Evaluates each mode's
-    /// `detect` predicate; returns the first match (BTreeMap path order). `None`
-    /// → the client should fall back to a picker over the keys of `modes`.
-    pub fn detect_mode(&self, observed: &PropView) -> Option<&str> {
-        self.modes
-            .iter()
-            .find(|(_, m)| m.detect.as_ref().is_some_and(|p| p.eval(observed)))
+    /// Which mode does `observed` put the camera in on `connection`? Only modes
+    /// whose `detect` applies on `connection` are considered: an empty
+    /// `detectConnections` list applies everywhere, a non-empty one only on the
+    /// listed connections. A matching mode scoped to `connection` wins over a
+    /// matching unscoped mode; within each group the first path in BTreeMap
+    /// order wins (MANIFEST_SCHEMA §11.34). `None` means no predicate holds,
+    /// and the client should fall back to a picker over the keys of `modes`.
+    pub fn detect_mode(&self, connection: &str, observed: &PropView) -> Option<&str> {
+        let matches = |scoped: bool| {
+            self.modes.iter().find(|(_, mode)| {
+                let applies = if scoped {
+                    mode.detect_connections.iter().any(|id| id == connection)
+                } else {
+                    mode.detect_connections.is_empty()
+                };
+                applies && mode.detect.as_ref().is_some_and(|p| p.eval(observed))
+            })
+        };
+        matches(true)
+            .or_else(|| matches(false))
             .map(|(path, _)| path.as_str())
     }
 
@@ -781,18 +794,79 @@ properties:
     fn detect_mode_and_capabilities() {
         let m = m();
         assert_eq!(
-            m.detect_mode(&PropView::new().with(0xdf01, 0x1600)),
+            m.detect_mode("xlv-http", &PropView::new().with(0xdf01, 0x1600)),
             Some("Shooting/Stills")
         );
         assert_eq!(
-            m.detect_mode(&PropView::new().with(0xdf01, 0x1400)),
+            m.detect_mode("xlv-http", &PropView::new().with(0xdf01, 0x1400)),
             Some("ImageTransfer")
         );
-        assert_eq!(m.detect_mode(&PropView::new().with(0xdf01, 0x9999)), None);
+        assert_eq!(
+            m.detect_mode("xlv-http", &PropView::new().with(0xdf01, 0x9999)),
+            None
+        );
         // Inherited capability + own capability.
         let caps = m.capabilities("Shooting/Stills");
         assert!(caps.contains(&"exposureControl")); // from Shooting
         assert!(caps.contains(&"liveView")); // from Shooting/Stills
+    }
+
+    /// Stills is detected everywhere from the function mode. Video is scoped
+    /// to `app` and also needs the selector. `a/scoped` and `z/scoped` are two
+    /// scoped modes on `app` that both match when 0xd001 is 7.
+    fn scoped_detection() -> CameraManifest {
+        CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: Test, model: Test, firmware: "1" }
+connections:
+  app: { kind: ptpip, modes: [shooting/stills, shooting/video, a/scoped, z/scoped] }
+  tether: { kind: ptpip }
+properties:
+  "0xdf01": { name: functionMode, type: u16 }
+  "0xd246": { name: selector, type: u8 }
+  "0xd001": { name: other, type: u8 }
+modes:
+  shooting/stills: { detect: { prop: "0xdf01", eq: 0x16 } }
+  shooting/video:
+    detect: { all: [ { prop: "0xdf01", eq: 0x16 }, { prop: "0xd246", eq: 1 } ] }
+    detectConnections: [app]
+  z/scoped: { detect: { prop: "0xd001", eq: 7 }, detectConnections: [app] }
+  a/scoped: { detect: { prop: "0xd001", eq: 7 }, detectConnections: [app] }
+"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn scoped_detection_outranks_unscoped_detection() {
+        let m = scoped_detection();
+        let video = PropView::new().with(0xdf01, 0x16).with(0xd246, 1);
+        assert_eq!(m.detect_mode("app", &video), Some("shooting/video"));
+        let stills = PropView::new().with(0xdf01, 0x16).with(0xd246, 0);
+        assert_eq!(m.detect_mode("app", &stills), Some("shooting/stills"));
+    }
+
+    #[test]
+    fn scoped_detection_is_ignored_on_another_connection() {
+        let m = scoped_detection();
+        let video = PropView::new().with(0xdf01, 0x16).with(0xd246, 1);
+        assert_eq!(m.detect_mode("tether", &video), Some("shooting/stills"));
+        assert_eq!(m.detect_mode("", &video), Some("shooting/stills"));
+    }
+
+    #[test]
+    fn unobserved_scoped_property_falls_back_to_unscoped_detection() {
+        let m = scoped_detection();
+        let no_selector = PropView::new().with(0xdf01, 0x16);
+        assert_eq!(m.detect_mode("app", &no_selector), Some("shooting/stills"));
+    }
+
+    #[test]
+    fn two_scoped_matches_resolve_by_path_order() {
+        let m = scoped_detection();
+        let both = PropView::new().with(0xdf01, 0x16).with(0xd001, 7);
+        assert_eq!(m.detect_mode("app", &both), Some("a/scoped"));
     }
 
     #[test]

@@ -3317,7 +3317,10 @@ impl ConfigStore {
             .collect()
     }
 
-    /// Which mode the observed props indicate (evaluates `detect` predicates).
+    /// Which mode the observed props indicate on `_connection` (evaluates
+    /// `detect` predicates). A mode whose detection is scoped to the connection
+    /// outranks an unscoped one (MANIFEST_SCHEMA §11.34). The parameter keeps
+    /// its underscore so the exported binding name stays unchanged.
     /// `None` → app should present a picker over [`Self::modes`].
     pub fn detect_mode(
         &self,
@@ -3326,7 +3329,7 @@ impl ConfigStore {
     ) -> Option<String> {
         self.inner
             .manifest
-            .detect_mode(&prop_view(&observed))
+            .detect_mode(&_connection, &prop_view(&observed))
             .map(String::from)
     }
 

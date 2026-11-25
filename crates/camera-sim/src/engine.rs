@@ -1831,7 +1831,10 @@ impl Engine {
             .iter()
             .filter_map(|(code, value)| value_to_i64(value).map(|value| (*code, value)))
             .collect();
-        let detected = self.manifest.detect_mode(&observed).map(str::to_string);
+        let detected = self
+            .manifest
+            .detect_mode(&self.connection, &observed)
+            .map(str::to_string);
         let previous_mode = self.state.active_mode.clone();
         self.state.active_mode = detected.clone();
         let transfer_active = detected.as_deref().is_some_and(|mode| {
