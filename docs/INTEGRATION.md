@@ -636,6 +636,31 @@ loader-visible `EstablishmentPlan.steps` themselves receive the same marker as
 marker only on `bleRead`, `bleNotify`, and `bleAwaitUntil`, including inside a
 one-shot `if` branch, and rejects duplicate markers.
 
+The X-A7 `legacy-app-pair` and `legacy-app-reconnect` plans declare no marker,
+so their `confirmOutcome` is `NotDeclared`. A completed walk does not show that
+the camera accepted the registration; which event ends the X-A7 pairing screen
+is unknown (#355). Several of their steps are tolerant because the legacy
+vendor mobile app continues past the same failures. Check `toleratedStepPaths`
+before treating the body as fully registered. When one of these paths is
+tolerated, this is what is missing:
+
+| path | missing when tolerated |
+|---|---|
+| `steps[11].bleRead` | `reservationAfterShooting`. The app uses it only for analytics. |
+| `steps[12].bleRead` | `pairedSmartDeviceCount`. |
+| `steps[13].bleRead` | `firmware`, the 0x2A26 firmware version string. |
+| `steps[23].bleSubscribe` | AP-state indications were not enabled at registration. `legacy-app-establish-wifi-ap` subscribes again and polls by read, so it does not depend on this. |
+| `steps[28].bleRead` | `apState` as read at the end of registration. |
+
+Other tolerant steps cover optional writes, reads, and subscribes that the app
+treats the same way. The serial (`steps[9]`) and SSID (`steps[10]`)
+reads are strict, so a walk without them fails.
+
+`legacy-app-establish-wifi-ap` fails with `ConditionRejected` when the camera
+reports AP state 3. In the legacy vendor mobile app, state 3 means reserved or
+automatic transfer, and the launch ends as not connectable. Present it as the
+camera being busy with an automatic transfer, not as a refusal of the request.
+
 ### 9.4 Walking PTP entry and action plans
 
 `PtpExecutorTransport` is the raw PTP/IP seam for mode entries and named
