@@ -649,14 +649,18 @@ tolerated, this is what is missing:
 | `steps[11].bleRead` | `reservationAfterShooting`. The app uses it only for analytics. |
 | `steps[12].bleRead` | `pairedSmartDeviceCount`. |
 | `steps[13].bleRead` | `firmware`, the 0x2A26 firmware version string. |
-| `steps[28].bleRead` | `apState` as read at the end of registration. |
 
 Other tolerant steps cover optional writes, reads, and subscribes that the app
 treats the same way. The serial (`steps[9]`) and SSID (`steps[10]`)
-reads are strict, so a walk without them fails. The AP-state subscribe
-(`steps[23]`) is also strict: the app never marks the link ready when its
-remaining CCCD writes all fail, so a link dropped during registration fails
-the walk instead of completing it.
+reads are strict, so a walk without them fails. Two later steps are strict
+as guards against a dropped link. The AP-state subscribe (`steps[23]`) is
+strict because the app never marks the link ready when its remaining CCCD
+writes fail without a callback, as on a dropped link. The tail AP-state read
+(`steps[28]`) is strict because the app marks the link ready without waiting
+for it, so the manifest needs a later strict step to catch a drop after the
+subscribe. A link that drops anywhere up to `steps[28]` fails the walk. Only a
+drop during the final transfer-state read (`steps[29]`, tolerant, the last
+step) can still complete.
 
 `legacy-app-establish-wifi-ap` fails with `ConditionRejected` when the camera
 reports AP state 3. In the legacy vendor mobile app, state 3 means reserved or
