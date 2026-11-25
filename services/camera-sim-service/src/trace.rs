@@ -25,6 +25,14 @@ pub struct FaultTraceEvidence<'a> {
     pub fault: &'a AppliedFault,
     pub payload: Option<&'a PayloadMetadata>,
     pub applied: String,
+    pub reply: FaultReplyEvidence,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct FaultReplyEvidence {
+    pub data_transaction_id: Option<u32>,
+    pub response_transaction_id: Option<u32>,
+    pub data_declared_length: Option<u64>,
 }
 
 pub(crate) struct OperationTraceEvidence {
@@ -66,6 +74,7 @@ struct TraceEvent {
     fault_kind: Option<String>,
     payload_summary: Option<PayloadSummary>,
     applied: Option<String>,
+    fault_reply: FaultReplyEvidence,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -141,6 +150,7 @@ impl TraceLog {
             fault_kind: None,
             payload_summary: None,
             applied: None,
+            fault_reply: FaultReplyEvidence::default(),
         });
         state.truncated_payloads += u64::from(payload_truncated);
         state.truncated_texts += u64::from(outcome_truncated) + u64::from(error_truncated);
@@ -159,6 +169,7 @@ impl TraceLog {
             fault,
             payload,
             applied,
+            reply,
         } = evidence;
         let mut state = self.state.lock().expect("lifecycle trace lock poisoned");
         let sequence = state.next_sequence;
@@ -186,6 +197,7 @@ impl TraceLog {
                 marker: "faultMutation".into(),
             }),
             applied: Some(applied),
+            fault_reply: reply,
         });
         while state.events.len() > MAX_EVENTS {
             state.events.pop_front();
@@ -231,6 +243,7 @@ impl TraceLog {
             fault_kind: None,
             payload_summary: None,
             applied: None,
+            fault_reply: FaultReplyEvidence::default(),
         });
         state.truncated_texts += u64::from(outcome_truncated) + u64::from(error_truncated);
         while state.events.len() > MAX_EVENTS {
@@ -266,6 +279,7 @@ impl TraceLog {
             fault_kind: None,
             payload_summary: None,
             applied: None,
+            fault_reply: FaultReplyEvidence::default(),
         });
         state.truncated_texts += u64::from(outcome_truncated);
         while state.events.len() > MAX_EVENTS {
@@ -318,6 +332,15 @@ impl TraceLog {
                         serde_json::to_value(payload_summary)
                             .expect("payload summary is JSON serializable"),
                     );
+                }
+                if let Some(id) = event.fault_reply.data_transaction_id {
+                    fields.insert("data_transaction_id".into(), id.into());
+                }
+                if let Some(id) = event.fault_reply.response_transaction_id {
+                    fields.insert("response_transaction_id".into(), id.into());
+                }
+                if let Some(length) = event.fault_reply.data_declared_length {
+                    fields.insert("data_declared_length".into(), length.into());
                 }
                 if let Some(applied) = &event.applied {
                     fields.insert("applied".into(), applied.clone().into());
@@ -478,6 +501,7 @@ mod tests {
             },
             payload: Some(&payload),
             applied: "replacedData".into(),
+            reply: FaultReplyEvidence::default(),
         });
 
         let json: serde_json::Value = serde_json::from_str(&trace.json("run", 0)).unwrap();

@@ -1130,25 +1130,32 @@ The mutation grammar is vendor-neutral:
 - `close` at `command`, `data`, or `response`;
 - `delay` at `data` or `response`, capped at 60000 ms;
 - `suppress` at `data` or `response`;
-- `truncateData` with `keep`;
+- `truncateData` with `keep`. The length header describes the shortened
+  payload. With `terminate: true`, the header describes the original payload
+  and the command connection closes after the `keep` payload bytes. If the
+  full payload fits within `keep`, the reply completes normally;
 - `replaceData` with at most 4096 bytes in `bytesHex`;
-- `replaceTransactionId` with `transactionId`;
+- `replaceTransactionId` with `transactionId` and optional `stage` (`data` or
+  `response`). Omitting `stage` selects both phases;
 - `dataFraming` with `standard`, `compressed`, or `usb` framing; and
 - `propertyReadback` with a signed scalar `value`, encoded through the selected
   manifest property's datatype when the operation is a recognized property
   read.
 
-Each applied rule adds exactly one `ptpip.fault.applied` event to `/trace` with
-the operation, transaction id, response code actually written when present,
-fault id and kind, the applied phase action, and length/SHA-256 metadata for a
-delivered bounded payload. Fault trace events never contain raw payload hex.
-The applied marker reports the actual wire outcome, including `noDataPhase`
-when a consumed data-phase mutation targets a reply with no data phase.
+Poll live view renders fixture data before reply payload mutations and phase
+suppression. The rule still selects the manifest-declared command operation.
+
+Each applied rule adds one `ptpip.fault.applied` event to `/trace` with the
+operation, request transaction ID, response code when emitted, fault ID and
+kind, and the applied action. `payload_summary` gives the length and SHA-256
+of the delivered bytes. Transaction-ID overrides add `data_transaction_id`
+and `response_transaction_id` for the phases written. For
+`interruptedData`, `data_declared_length` gives the payload length announced
+in the header and `payload_summary` describes the prefix sent before EOF.
 The canonical observation schema is unchanged.
 
-Byte-offset disconnects, live-view-frame faults, and init-packet faults remain
-future extensions. They are not accepted by the current selector or mutation
-grammar.
+The selector targets command operations. Push live view and init packets use
+separate paths.
 
 ## App Integration
 

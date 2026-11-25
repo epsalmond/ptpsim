@@ -1078,7 +1078,10 @@ impl Engine {
         }
         if let Some(mutation) = &applied_mutation {
             match mutation {
-                FaultMutation::TruncateData { keep } => truncate_reply_data(&mut reply, *keep),
+                FaultMutation::TruncateData {
+                    keep,
+                    terminate: false,
+                } => truncate_reply_data(&mut reply, *keep),
                 FaultMutation::ReplaceData { bytes } => replace_reply_data(&mut reply, bytes),
                 FaultMutation::PropertyReadback { value } => {
                     self.replace_property_readback(req, &mut reply, *value)
@@ -1087,6 +1090,9 @@ impl Engine {
                 | FaultMutation::Close { .. }
                 | FaultMutation::Delay { .. }
                 | FaultMutation::Suppress { .. }
+                | FaultMutation::TruncateData {
+                    terminate: true, ..
+                }
                 | FaultMutation::ReplaceTransactionId { .. }
                 | FaultMutation::DataFraming { .. } => {}
             }

@@ -28,8 +28,8 @@ use camera_config::{SocketRole, WireFraming};
 use camera_media_store::{ByteSource, MediaStore};
 use camera_sim::StateOverlay;
 use camera_sim::{
-    AppliedFault, AppliedStateOverlay, Engine, FrameSource, LoopingFrameSource, Phase, Reply,
-    StreamCompletion, WirePlan,
+    AppliedFault, AppliedStateOverlay, DataOrResponse, Engine, FrameSource, LoopingFrameSource,
+    Phase, Reply, StreamCompletion, WirePlan,
 };
 use protocol_primitives::{
     fuji_framing, parse_app_init, parse_legacy_app_init, parse_pcss_discovery, parse_pcss_init,
@@ -384,7 +384,9 @@ mod state_json;
 mod trace;
 
 pub(crate) use metrics::Metrics;
-use trace::{FaultTraceEvidence, OperationTraceEvidence, TraceEndpoints, TraceLog};
+use trace::{
+    FaultReplyEvidence, FaultTraceEvidence, OperationTraceEvidence, TraceEndpoints, TraceLog,
+};
 
 #[derive(Clone)]
 pub struct Config {
@@ -2575,6 +2577,13 @@ async fn handle_command_conn_inner(
             .as_ref()
             .map(|fault| &fault.wire)
             .unwrap_or(&WirePlan::None);
+        let response_transaction_id = match &reply {
+            Reply::Response(response)
+            | Reply::Data { response, .. }
+            | Reply::DataStream { response, .. } => Some(response.transaction_id),
+            Reply::NoResponse | Reply::Close => None,
+        };
+        let data_length = reply_data_length(&reply);
         let write_result = write_reply(
             &mut stream,
             &req,
@@ -2586,26 +2595,32 @@ async fn handle_command_conn_inner(
         .await;
         let reply_written_at = Instant::now();
         if let Some(fault) = &applied_fault {
+            let written = write_result.as_ref().ok();
+            let response = written.and_then(|written| written.response.as_ref());
+            let payload = written.and_then(|written| written.payload.as_ref());
+            let wire_outcome = written.and_then(|written| written.wire_outcome);
+            let mut reply_evidence = FaultReplyEvidence::default();
+            if matches!(wire, WirePlan::ReplaceTransactionId { .. }) {
+                reply_evidence.data_transaction_id = payload
+                    .map(|_| wire_transaction_id(wire, DataOrResponse::Data, req.transaction_id));
+                reply_evidence.response_transaction_id = response
+                    .and(response_transaction_id)
+                    .map(|id| wire_transaction_id(wire, DataOrResponse::Response, id));
+            }
+            if wire_outcome == Some("interruptedData") {
+                reply_evidence.data_declared_length = data_length;
+            }
             trace.record_fault(FaultTraceEvidence {
                 endpoints: endpoints.clone(),
                 operation: req.code,
                 transaction_id: req.transaction_id,
-                response_code: write_result
-                    .as_ref()
-                    .ok()
-                    .and_then(|written| written.response.as_ref())
-                    .map(|response| response.code.as_str()),
+                response_code: response.map(|response| response.code.as_str()),
                 fault,
-                payload: write_result
-                    .as_ref()
-                    .ok()
-                    .and_then(|written| written.payload.as_ref()),
-                applied: write_result
-                    .as_ref()
-                    .ok()
-                    .and_then(|written| written.wire_outcome)
+                payload,
+                applied: wire_outcome
                     .map(str::to_string)
                     .unwrap_or_else(|| applied_fault_marker(fault)),
+                reply: reply_evidence,
             });
         }
         let (response, outcome, completion, closed, write_error) = match write_result {
@@ -3235,6 +3250,14 @@ struct WrittenReply {
     wire_outcome: Option<&'static str>,
 }
 
+fn reply_data_length(reply: &Reply) -> Option<u64> {
+    match reply {
+        Reply::Data { data, .. } => Some(data.len() as u64),
+        Reply::DataStream { source, .. } => Some(source.len()),
+        Reply::Response(_) | Reply::NoResponse | Reply::Close => None,
+    }
+}
+
 async fn write_reply<W: AsyncWrite + Unpin>(
     stream: &mut W,
     req: &OperationRequest,
@@ -3243,6 +3266,34 @@ async fn write_reply<W: AsyncWrite + Unpin>(
     wire: &WirePlan,
     metrics: &Metrics,
 ) -> std::io::Result<WrittenReply> {
+    if let WirePlan::InterruptData { keep } = *wire {
+        if reply_data_length(&reply).is_some_and(|length| keep < length) {
+            let source = match reply {
+                Reply::Data { data, .. } => ByteSource::Memory(data),
+                Reply::DataStream { source, .. } => source,
+                _ => unreachable!("only a data reply has a payload length"),
+            };
+            let payload = stream_data_phase(
+                stream,
+                framing,
+                req.code,
+                req.transaction_id,
+                &source,
+                Some(keep),
+                metrics,
+            )
+            .await?;
+            return Ok(WrittenReply {
+                response: None,
+                outcome: TransactionOutcome::TransportAbort,
+                completion: None,
+                payload: Some(payload),
+                closed: true,
+                wire_outcome: Some("interruptedData"),
+            });
+        }
+    }
+
     let wire_outcome = match &reply {
         Reply::Response(_) => applied_wire_outcome(wire, false, true),
         Reply::Data { .. } | Reply::DataStream { .. } => applied_wire_outcome(wire, true, true),
@@ -3303,7 +3354,8 @@ async fn write_reply<W: AsyncWrite + Unpin>(
             }
             let code = response.code;
             let parameters = response.params.clone();
-            let transaction_id = wire_transaction_id(wire, req.transaction_id);
+            let transaction_id =
+                wire_transaction_id(wire, DataOrResponse::Data, req.transaction_id);
             let mut payload = None;
             if !matches!(wire, WirePlan::SuppressData) {
                 delay_data(wire).await;
@@ -3378,7 +3430,8 @@ async fn write_reply<W: AsyncWrite + Unpin>(
             }
             let code = response.code;
             let parameters = response.params.clone();
-            let transaction_id = wire_transaction_id(wire, req.transaction_id);
+            let transaction_id =
+                wire_transaction_id(wire, DataOrResponse::Data, req.transaction_id);
             let payload = if matches!(wire, WirePlan::SuppressData) {
                 None
             } else {
@@ -3390,6 +3443,7 @@ async fn write_reply<W: AsyncWrite + Unpin>(
                         req.code,
                         transaction_id,
                         &source,
+                        None,
                         metrics,
                     )
                     .await?,
@@ -3493,10 +3547,16 @@ fn applied_wire_outcome(
         } else {
             "noResponsePhase"
         }),
-        WirePlan::ReplaceTransactionId(_) => Some(if has_data_phase || has_response_phase {
-            "replacedTransactionId"
+        WirePlan::InterruptData { .. } => Some(if has_data_phase {
+            "noIncompleteData"
         } else {
-            "noWirePhase"
+            "noDataPhase"
+        }),
+        WirePlan::ReplaceTransactionId { stage, .. } => Some(match stage {
+            Some(DataOrResponse::Data) if !has_data_phase => "noDataPhase",
+            Some(DataOrResponse::Response) if !has_response_phase => "noResponsePhase",
+            None if !has_data_phase && !has_response_phase => "noWirePhase",
+            _ => transaction_id_fault_marker(*stage),
         }),
         WirePlan::DataFraming(_) => Some(if has_data_phase {
             "changedDataFraming"
@@ -3507,16 +3567,26 @@ fn applied_wire_outcome(
     }
 }
 
-fn wire_transaction_id(wire: &WirePlan, session_id: u32) -> u32 {
+fn wire_transaction_id(wire: &WirePlan, phase: DataOrResponse, original: u32) -> u32 {
     match wire {
-        WirePlan::ReplaceTransactionId(transaction_id) => *transaction_id,
-        _ => session_id,
+        WirePlan::ReplaceTransactionId {
+            transaction_id,
+            stage,
+        } if stage.is_none() || *stage == Some(phase) => *transaction_id,
+        _ => original,
     }
 }
 
 fn replace_response_transaction_id(wire: &WirePlan, response: &mut ptp_core::OperationResponse) {
-    if let WirePlan::ReplaceTransactionId(transaction_id) = wire {
-        response.transaction_id = *transaction_id;
+    response.transaction_id =
+        wire_transaction_id(wire, DataOrResponse::Response, response.transaction_id);
+}
+
+fn transaction_id_fault_marker(stage: Option<DataOrResponse>) -> &'static str {
+    match stage {
+        Some(DataOrResponse::Data) => "replacedDataTransactionId",
+        Some(DataOrResponse::Response) => "replacedResponseTransactionId",
+        None => "replacedTransactionId",
     }
 }
 
@@ -3547,7 +3617,8 @@ fn applied_fault_marker(fault: &AppliedFault) -> String {
         WirePlan::DelayResponse { .. } => "delayedResponse",
         WirePlan::SuppressData => "suppressedData",
         WirePlan::SuppressResponse => "suppressedResponse",
-        WirePlan::ReplaceTransactionId(_) => "replacedTransactionId",
+        WirePlan::InterruptData { .. } => "interruptedData",
+        WirePlan::ReplaceTransactionId { stage, .. } => transaction_id_fault_marker(stage),
         WirePlan::DataFraming(_) => "changedDataFraming",
         WirePlan::None => match fault.kind.as_str() {
             "failResponse" => "failedResponse",
@@ -3561,24 +3632,24 @@ fn applied_fault_marker(fault: &AppliedFault) -> String {
     .to_string()
 }
 
-/// Emit the data phase as a single type-2 `Data` frame — the whole payload
-/// arrives in one length-prefixed frame on the wire, matching real Fuji (a
-/// 14.5 MB `GetObject` is one frame). The 12-byte header goes out first with the
-/// total length; the body is then streamed from `source` one `DATA_CHUNK_BYTES`
-/// read at a time, so peak in-process allocation stays bounded regardless of
-/// `source.len()` even though the client sees a single frame. `op` is echoed in
-/// the frame's code field.
+/// Stream one length-prefixed data frame, bounded to one buffer per write.
+/// Standard framing precedes the payload frame with StartData. A fault can
+/// interrupt delivery while retaining the source length in both headers.
 async fn stream_data_phase<W: AsyncWrite + Unpin>(
     stream: &mut W,
     framing: WireFraming,
     op: u16,
     transaction_id: u32,
     source: &ByteSource,
+    write_limit: Option<u64>,
     metrics: &Metrics,
 ) -> std::io::Result<PayloadMetadata> {
     let total_length = source.len();
+    let length_to_write = write_limit.unwrap_or(total_length);
     let payload_len = u32::try_from(total_length)
-        .map_err(|_| std::io::Error::other("data-phase payload exceeds a single frame (u32)"))?;
+        .ok()
+        .filter(|length| length.checked_add(12).is_some())
+        .ok_or_else(|| std::io::Error::other("data-phase payload exceeds a single frame (u32)"))?;
     if framing == WireFraming::Standard {
         let start = ptp_core::encode(&PtpIpPacket::StartData(ptp_core::StartData {
             transaction_id,
@@ -3605,8 +3676,8 @@ async fn stream_data_phase<W: AsyncWrite + Unpin>(
 
     let mut offset: u64 = 0;
     let mut metadata = PayloadMetadataBuilder::new();
-    while offset < total_length {
-        let take = ((total_length - offset) as usize).min(DATA_CHUNK_BYTES);
+    while offset < length_to_write {
+        let take = ((length_to_write - offset) as usize).min(DATA_CHUNK_BYTES);
         let chunk = source
             .read_chunk(offset, take)
             .map_err(|e| std::io::Error::other(e.to_string()))?;
@@ -3618,7 +3689,7 @@ async fn stream_data_phase<W: AsyncWrite + Unpin>(
         metadata.update(&chunk);
         offset += chunk.len() as u64;
     }
-    if offset != total_length {
+    if offset != length_to_write {
         return Err(std::io::Error::new(
             std::io::ErrorKind::UnexpectedEof,
             "stream source ended before its declared length",
@@ -5038,6 +5109,46 @@ properties:
         assert_eq!(delivered[12..body_end], source.read().unwrap());
     }
 
+    #[tokio::test]
+    async fn interrupted_standard_stream_keeps_declared_lengths() {
+        let (req, _) = data_reply(7);
+        let source = ByteSource::Generated { len: 8, seed: 1 };
+        let expected = encode_data_frame(
+            WireFraming::Standard,
+            req.code,
+            req.transaction_id,
+            &source.read().unwrap(),
+        )
+        .unwrap();
+        let reply = Reply::DataStream {
+            source,
+            response: ptp_core::OperationResponse {
+                code: resp::OK,
+                transaction_id: req.transaction_id,
+                params: Vec::new(),
+            },
+            completion: None,
+        };
+        let mut delivered = Vec::new();
+        let written = write_reply(
+            &mut delivered,
+            &req,
+            reply,
+            WireFraming::Standard,
+            &WirePlan::InterruptData { keep: 3 },
+            &Metrics::default(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(delivered, expected[..20 + 12 + 3]);
+        assert_eq!(written.outcome, TransactionOutcome::TransportAbort);
+        assert!(written.closed);
+        assert!(written.response.is_none());
+        assert_eq!(written.payload.unwrap().length, 3);
+        assert_eq!(written.wire_outcome, Some("interruptedData"));
+    }
+
     fn data_reply(transaction_id: u32) -> (OperationRequest, Reply) {
         (
             OperationRequest {
@@ -5126,7 +5237,10 @@ properties:
             &req,
             reply,
             WireFraming::Compressed,
-            &WirePlan::ReplaceTransactionId(99),
+            &WirePlan::ReplaceTransactionId {
+                transaction_id: 99,
+                stage: None,
+            },
             &metrics,
         )
         .await

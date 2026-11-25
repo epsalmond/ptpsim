@@ -2495,23 +2495,129 @@ async fn pcss_poll_faults_apply_to_rendered_reply() {
 
         write_frame(&mut cmd, &op(0x9018, 4, vec![]));
         assert_eq!(read_data_reply(&mut cmd), jpeg.as_slice());
-        let id = install_fault(
-            control,
-            serde_json::json!({
-                "operation":"0x9018", "count":1,
-                "mutation":{"type":"replaceData","bytesHex":"74657374"}
-            }),
-        );
+        let install = |mutation| {
+            install_fault(
+                control,
+                serde_json::json!({"operation":"0x9018", "count":1, "mutation":mutation}),
+            )
+        };
+        let verify_then_delete = |id, tid, applied: &str| {
+            let snapshot: serde_json::Value =
+                serde_json::from_str(http_body(&http_get(control, "/faults"))).unwrap();
+            assert_eq!(snapshot["faults"][0]["id"], id);
+            assert_eq!(snapshot["faults"][0]["applied"], 1);
+            assert_eq!(snapshot["faults"][0]["exhausted"], true);
+            assert_eq!(snapshot["lastApplied"]["id"], id);
+
+            let trace = trace_json(control);
+            let events = trace["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|event| event["fault_id"] == id)
+                .collect::<Vec<_>>();
+            assert_eq!(events.len(), 1);
+            let event = events[0];
+            assert_eq!(event["kind"], "ptpip.fault.applied");
+            assert_eq!(event["operation"], "0x9018");
+            assert_eq!(event["transaction_id"], tid);
+            assert_eq!(event["applied"], applied);
+            assert!(http_delete(control, &format!("/faults/{id}")).starts_with("HTTP/1.1 200"));
+            let cleared: serde_json::Value =
+                serde_json::from_str(http_body(&http_get(control, "/faults"))).unwrap();
+            assert_eq!(cleared["faults"], serde_json::json!([]));
+            assert_eq!(cleared["lastApplied"], serde_json::Value::Null);
+            event.clone()
+        };
+
+        let id = install(serde_json::json!({"type":"replaceData","bytesHex":"74657374"}));
         write_frame(&mut cmd, &op(0x9018, 5, vec![]));
-        assert_eq!(read_data_reply(&mut cmd), b"test");
-        let snapshot: serde_json::Value =
-            serde_json::from_str(http_body(&http_get(control, "/faults"))).unwrap();
-        assert_eq!(snapshot["faults"][0]["id"], id);
-        assert_eq!(snapshot["faults"][0]["applied"], 1);
-        assert_eq!(snapshot["faults"][0]["exhausted"], true);
-        assert!(http_delete(control, &format!("/faults/{id}")).starts_with("HTTP/1.1 200"));
+        let actual = read_data_reply(&mut cmd);
+        assert_eq!(actual.len(), 4);
+        assert_eq!(actual, b"test");
+        let event = verify_then_delete(id, 5, "replacedData");
+        assert_eq!(event["payload_summary"]["length"], 4);
+        assert_eq!(
+            event["payload_summary"]["sha256"],
+            camera_config::payload_metadata(b"test").sha256
+        );
+
+        let id = install(serde_json::json!({"type":"truncateData","keep":1}));
         write_frame(&mut cmd, &op(0x9018, 6, vec![]));
+        let data = read_frame(&mut cmd);
+        assert_eq!(data, fuji_framing::encode_data(0x9018, 6, &jpeg[..1]));
+        read_ok(&mut cmd);
+        let event = verify_then_delete(id, 6, "truncatedData");
+        assert_eq!(event["payload_summary"]["length"], 1);
+
+        let id = install(serde_json::json!({"type":"suppress","stage":"response"}));
+        write_frame(&mut cmd, &op(0x9018, 7, vec![]));
+        assert_eq!(
+            read_frame(&mut cmd),
+            fuji_framing::encode_data(0x9018, 7, jpeg)
+        );
+        cmd.set_read_timeout(Some(std::time::Duration::from_millis(100)))
+            .unwrap();
+        assert_read_timeout(&mut cmd);
+        cmd.set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .unwrap();
+        let event = verify_then_delete(id, 7, "suppressedResponse");
+        assert_eq!(event["payload_summary"]["length"], jpeg.len());
+        assert!(event.get("response_code").is_none());
+
+        for (stage, tid, data_tid, response_tid, marker) in [
+            ("data", 8, 99, 8, "replacedDataTransactionId"),
+            ("response", 9, 9, 99, "replacedResponseTransactionId"),
+        ] {
+            let id = install(serde_json::json!({
+                "type":"replaceTransactionId", "transactionId":99, "stage":stage
+            }));
+            write_frame(&mut cmd, &op(0x9018, tid, vec![]));
+            assert_eq!(
+                read_frame(&mut cmd),
+                fuji_framing::encode_data(0x9018, data_tid, jpeg)
+            );
+            assert!(matches!(
+                fuji_framing::decode(&read_frame(&mut cmd)).unwrap(),
+                PtpIpPacket::OperationResponse(response)
+                    if response.code == 0x2001 && response.transaction_id == response_tid
+            ));
+            let event = verify_then_delete(id, tid, marker);
+            assert_eq!(event["data_transaction_id"], data_tid);
+            assert_eq!(event["response_transaction_id"], response_tid);
+        }
+
+        let id = install(serde_json::json!({
+            "type":"truncateData", "keep":jpeg.len(), "terminate":true
+        }));
+        write_frame(&mut cmd, &op(0x9018, 10, vec![]));
         assert_eq!(read_data_reply(&mut cmd), jpeg.as_slice());
+        verify_then_delete(id, 10, "noIncompleteData");
+
+        let id = install(serde_json::json!({"type":"suppress","stage":"data"}));
+        write_frame(&mut cmd, &op(0x9018, 11, vec![]));
+        read_ok(&mut cmd);
+        let event = verify_then_delete(id, 11, "suppressedData");
+        assert!(event.get("payload_summary").is_none());
+
+        write_frame(&mut cmd, &op(0x9018, 12, vec![]));
+        assert_eq!(read_data_reply(&mut cmd), jpeg.as_slice());
+
+        let id = install(serde_json::json!({"type":"truncateData","keep":5,"terminate":true}));
+        write_frame(&mut cmd, &op(0x9018, 13, vec![]));
+        let mut partial = [0; 17];
+        cmd.read_exact(&mut partial).unwrap();
+        let expected = fuji_framing::encode_data(0x9018, 13, jpeg);
+        assert_eq!(partial, expected[..17]);
+        assert_socket_closed(&mut cmd);
+        let event = verify_then_delete(id, 13, "interruptedData");
+        assert!(event.get("response_code").is_none());
+        assert_eq!(event["payload_summary"]["length"], 5);
+        assert_eq!(
+            event["payload_summary"]["sha256"],
+            camera_config::payload_metadata(&jpeg[..5]).sha256
+        );
+        assert_eq!(event["data_declared_length"], jpeg.len());
     })
     .await
     .unwrap();
