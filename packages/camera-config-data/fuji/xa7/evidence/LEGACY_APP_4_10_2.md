@@ -4,17 +4,18 @@
 
 This document records how the legacy vendor mobile app, version 4.10.2,
 connects to an X-A7. It comes from analysis of the app's code. Statements
-describe what the app does, not what the camera requires. No capture of this
-app with an X-A7 exists. Where the analysis does not state something, this
-document says it is unknown.
+describe what the app does, not what the camera requires. This reduction
+uses no capture of this app with an X-A7. Where the analysis does not state
+something, this document says it is unknown.
 
 ## Discovery
 
 - The app accepts adverts carrying the camera-information service
   `117C4142-EDD4-4C77-8696-DD18EEBB770A` and a device name longer than four
   characters. The first four characters are the short serial.
-- Manufacturer byte 0 is a bit field. Bit 1 means the next four bytes are the
-  pairing key, which the app copies as advertised.
+- Manufacturer byte 0 is a bit field. Bit 0 means a four-byte section
+  follows, which the app skips. Bit 1 means the next four bytes after that are
+  the pairing key, which the app copies as advertised.
 - A pairing scan uses only keyed adverts. A reconnect scan uses only keyless
   adverts.
 
@@ -64,9 +65,10 @@ have no consumer in the app.
   callback stalls the queue. No read failure disconnects.
 - A missing CCCD characteristic or descriptor, or a CCCD write that cannot be
   issued, is skipped. Any descriptor callback advances to the next entry,
-  whatever its status. A CCCD write with no callback stalls the queue. If it
-  is the last one, the app can still mark the link ready but does not issue the
-  AP-state and transfer-state reads.
+  whatever its status. If every remaining entry is skipped without a callback,
+  the app never marks the link ready. A non-final CCCD write with no callback
+  stalls the queue. A final one with no callback can still mark the link ready
+  but does not issue the AP-state and transfer-state reads.
 - The app makes up to 3 attempts to issue each GATT operation, waiting up to
   5 s for each callback. There is no overall registration deadline.
 
@@ -91,9 +93,10 @@ The app reads AP state as a `u16-le`:
 | 2 | launching | ignores it |
 | 3 | reserved or automatic transfer | ends the launch as not connectable |
 
-The app treats AP state 3 together with transfer state 1 as a camera ready for
-reserved (automatic) transfer. It never writes the launch characteristic to
-start that transfer. It
+The app treats a camera as ready for reserved (automatic) transfer from AP
+state 3. A transfer-state update qualifies only with AP state 3 and transfer
+state 1. An AP-state indication that changes to 3 qualifies on its own. The
+app never writes the launch characteristic to start that transfer, and it
 reads no passphrase or BSSID.
 
 ## Pairing-screen cue
@@ -145,6 +148,10 @@ step in the app.
   The manifest fails the walk if the `2A25` or SSID read fails: on iOS the
   `2A25` read starts bonding, both values are persisted, and the SSID drives
   the Wi-Fi join.
+- **AP-state subscribe.** Strict, unlike a single CCCD in the app: the app
+  never marks the link ready when the remaining CCCD writes all fail, and a
+  tolerant step cannot express that, so this step keeps a walk from completing
+  on a dropped link.
 - **Tolerance model.** A tolerant manifest step continues past any failure.
   The app's continuation depends on the kind of failure, as listed above.
 - **Launch-time reconnect and resubscribe.** `legacy-app-establish-wifi-ap`
