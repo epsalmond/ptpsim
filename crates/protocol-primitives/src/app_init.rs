@@ -1,14 +1,20 @@
-//! Fuji reference app `InitCommandRequest` (id `fuji-app-init`) — the 82-byte PTP/IP init
-//! the GFX expects before the compressed channel opens.
+//! Fixed-field 82-byte PTP/IP `InitCommandRequest`, selected by the manifest
+//! connection field `initShape: app82`.
 //!
-//! Fixed layout for the scoped reference app-compatible manifest shape:
+//! Layout:
 //! ```text
 //! u32 length (= total, 82)   u32 type (1 = Init_Command_Request)
 //! payload: GUID[16]  u32(0)  friendlyNameField[54]
 //! ```
 //! The friendly-name field contains UTF-16LE text followed by one NUL unit and
-//! deterministic zero-fill. Identity comes from manifest value policy; this
-//! code owns only the fixed wire framing.
+//! deterministic zero-fill. Unlike the standard request, the name field has a
+//! fixed width and there is no protocol-version tail.
+//!
+//! The manifest owns everything camera-specific: which connections use this
+//! shape, plus the value policy that resolves the initiator GUID and the
+//! friendly name. This module owns only the fixed wire framing, which is a
+//! wire format rather than per-camera data, so it stays code like the legacy
+//! init shape beside it.
 
 use crate::error::FramingError;
 use ptp_core::Writer;
@@ -107,7 +113,8 @@ fn fixed_name_field(name: &str) -> Result<[u8; NAME_FIELD_BYTES], FramingError> 
 }
 
 /// Validate an InitCommandAck: declared length must match, and the packet type
-/// must be `Init_Command_Ack` (2). Mirrors the app's `validateInitCommandAck`.
+/// must be `Init_Command_Ack` (2). This is the same check the reference app
+/// applies to the camera's acknowledgment.
 pub fn validate_init_ack(packet: &[u8]) -> Result<(), FramingError> {
     if packet.len() < 8 {
         return Err(FramingError::InitAck(format!(
