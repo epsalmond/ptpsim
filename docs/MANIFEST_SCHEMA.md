@@ -173,9 +173,10 @@ must not be authored as a 0x2A00 `bleRead`.
 - `blePeripheralName: { captureAs: <slot> }` captures the connected
   peripheral's platform name into scope as a UTF-8 string with any NUL
   terminator removed. Hosts without GAP access use the platform
-  peripheral-name property; hosts with GAP access may satisfy the step with
-  the 0x2A00 GATT read. The step implies no GATT traffic on checkpoint
-  platforms and takes the usual `StepOptions`. An unavailable name
+  peripheral-name property. Hosts with GAP access should satisfy the step
+  with the 0x2A00 GATT read, because that read is what the reference app
+  sends. Whether the camera reacts to the read is unknown. The step implies no GATT traffic on
+  checkpoint platforms and takes the usual `StepOptions`. An unavailable name
   (`CBPeripheral.name` is optional) is a transport error, never an empty
   string: the step fails, tolerant-aware as usual.
 
