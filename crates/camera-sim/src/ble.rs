@@ -208,9 +208,14 @@ impl BleResponder {
 
     /// Serve `bytes` on every read of `uuid` (also adds it to the catalog).
     pub fn serve_read(mut self, uuid: &str, bytes: &[u8]) -> Self {
+        self.set_read_value(uuid, bytes);
+        self
+    }
+
+    /// Change a characteristic's fixed read value for the active responder.
+    pub fn set_read_value(&mut self, uuid: &str, bytes: &[u8]) {
         self.catalog.insert(uuid.to_string());
         self.read_values.insert(uuid.to_string(), bytes.to_vec());
-        self
     }
 
     /// Serve an evolving sequence of read values on `uuid`: each `read` pops

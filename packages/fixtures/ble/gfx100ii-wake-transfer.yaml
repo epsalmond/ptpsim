@@ -1,0 +1,31 @@
+# Simulated saved-camera monitoring, wake, and camera-initiated transfer.
+schema: ptpsim-ble-scenario/v1
+provenance: test-scripted
+index: ../../camera-config-data/fuji/index.yaml
+model: gfx100ii
+mtu: 247
+cameraInitiatedTransfer: true
+arming: { prep: imageTransferSetting, launch: functionLaunchRequest, deviceName: deviceNameString }
+peripherals:
+  - id: "6F1C2A4E-3B7D-4C59-8E21-0A9B4D7C3E15"
+    # Manifest bleAwakeLegacyAdvert. The local name uses a synthetic serial.
+    advert:
+      serviceUuids: ["AF854C2E-B214-458E-97E2-912C4ECF2CB8"]
+      localName: "0001GFX100II-0001"
+    advertAfterPeerDisconnects:
+      # Manifest bleStartupLegacyAdvert. The test key follows the pairing fixture.
+      1:
+        serviceUuids: ["731893F9-744E-4899-B7E3-174106FF2B82"]
+        manufacturerData: "d8040244732a80"
+reads:
+  protectedSerialString: { utf8: "PTPSIM-GFX100II-0001" }
+  cameraSSIDNameString: { utf8: "ptpsim-ap" }
+  cameraWiFiPassphraseString: { utf8: "ptpsim-pass" }
+notifications:
+  # The AP handoff after wake runs the same fenced launch as the pairing fixture.
+  - { gatt: apState, afterFencedWrite: { gatt: functionLaunchRequest, ordinal: 1 }, hex: "0280" }
+  - { gatt: apState, afterFencedWrite: { gatt: functionLaunchRequest, ordinal: 1 }, hex: "0180" }
+peerDisconnects:
+  # Drop after the monitor's baseline seed read, then again during ble-wake.
+  - { afterRead: apState }
+  - { awaitDisconnect: true }

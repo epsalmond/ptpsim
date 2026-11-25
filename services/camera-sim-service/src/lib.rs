@@ -546,6 +546,18 @@ struct BleListener {
     socket: ble_socket::BleSocket,
 }
 
+fn apply_state_overlay(
+    engine: &mut Engine,
+    overlay: &StateOverlay,
+    ble: Option<&ble_socket::BleSocket>,
+) -> Result<AppliedStateOverlay, String> {
+    let applied = engine.apply_state_overlay(overlay)?;
+    if let Some(ble) = ble {
+        ble.set_transfer_active(engine.camera_initiated_transfer_active());
+    }
+    Ok(applied)
+}
+
 enum AuxListener {
     Listening(TcpListener),
     Declared(Arc<DeclaredAuxListener>),
@@ -1269,14 +1281,20 @@ impl Server {
                 "BLE socket bind {bind} is not a loopback address; the protocol is unauthenticated (--ble-allow-non-loopback overrides)"
             )));
         }
-        let link = self.camera_link().await;
-        let scenario = ble_socket::BleScenario::load(scenario, link)
+        let socket = {
+            let engine = self.engine.lock().await;
+            let scenario = ble_socket::BleScenario::load_with_manifest(
+                scenario,
+                engine.link(),
+                Some((engine.manifest(), &self.config.connection)),
+            )
             .map_err(|error| invalid_config(error.to_string()))?;
+            let socket = ble_socket::BleSocket::new(scenario);
+            socket.set_transfer_active(engine.camera_initiated_transfer_active());
+            socket
+        };
         let listener = TcpListener::bind(bind).await?;
-        self.ble = Some(BleListener {
-            listener,
-            socket: ble_socket::BleSocket::new(scenario),
-        });
+        self.ble = Some(BleListener { listener, socket });
         Ok(())
     }
 
@@ -1342,7 +1360,12 @@ impl Server {
         overlay: &StateOverlay,
     ) -> Result<AppliedStateOverlay, String> {
         overlay.validate_context(&self.config.profile, &self.config.connection)?;
-        self.engine.lock().await.apply_state_overlay(overlay)
+        let mut engine = self.engine.lock().await;
+        apply_state_overlay(
+            &mut engine,
+            overlay,
+            self.ble.as_ref().map(|ble| &ble.socket),
+        )
     }
 
     /// Serve until `shutdown` resolves (the `/shutdown` endpoint or a SIGTERM
@@ -1522,6 +1545,7 @@ impl Server {
                 shutdown: ctl_shutdown.clone(),
                 declared_aux,
                 declared_aux_sync,
+                ble: ble.as_ref().map(|ble| ble.socket.clone()),
             };
             let mut sub = shutdown_tx.subscribe();
             async move {

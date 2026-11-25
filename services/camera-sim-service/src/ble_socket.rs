@@ -2,21 +2,22 @@
 //! a client that has no Bluetooth radio. The protocol, the scenario format and
 //! the limits are specified in `docs/TRANSPORTS.md` "BLE socket".
 //!
-//! The wire carries opaque UUIDs and bytes only. Every served value comes from
-//! a scenario file that resolves symbolic GATT names through a manufacturer
-//! index, so no camera knowledge lives in this module.
+//! The wire carries opaque UUIDs and bytes. A scenario resolves symbolic GATT
+//! names through the manufacturer index. Values come from the scenario or the
+//! loaded camera manifest.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use camera_config::index::{CccdMode, ResolvedManufacturerIndex};
+use camera_config::{parse_hex_bytes, CameraManifest};
 use camera_sim::{BleError, BleEvent, BleResponder, SharedLink};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
-use tokio::sync::Notify;
+use tokio::sync::{watch, Notify};
 use tokio::time::{Duration, Instant};
 
 pub const PROTOCOL: &str = "ptpsim-ble";
@@ -39,6 +40,7 @@ pub struct BleAdvert {
     /// The raw advertised field: 2-byte little-endian company ID, then the
     /// payload.
     pub manufacturer_data: Vec<u8>,
+    pub local_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +58,8 @@ type ResponderFactory = Arc<dyn Fn() -> BleResponder + Send + Sync>;
 #[derive(Clone)]
 pub struct BleScenario {
     peripherals: Vec<SimulatedPeripheral>,
+    advert_stages: BTreeMap<String, BTreeMap<usize, BleAdvert>>,
+    transfer_values: BTreeMap<String, TransferTriggerValues>,
     mtu: u16,
     peripheral_name: Option<String>,
     factory: ResponderFactory,
@@ -99,6 +103,8 @@ struct ScenarioFile {
     notifications: Vec<NotificationFile>,
     #[serde(default)]
     peer_disconnects: Vec<PeerDisconnectFile>,
+    #[serde(default)]
+    camera_initiated_transfer: bool,
 }
 
 #[derive(Deserialize)]
@@ -117,6 +123,8 @@ struct ArmingFile {
 struct PeripheralFile {
     id: String,
     advert: AdvertFile,
+    #[serde(default)]
+    advert_after_peer_disconnects: BTreeMap<usize, AdvertFile>,
 }
 
 #[derive(Deserialize)]
@@ -124,7 +132,31 @@ struct PeripheralFile {
 struct AdvertFile {
     #[serde(default)]
     service_uuids: Vec<String>,
+    #[serde(default)]
     manufacturer_data: String,
+    local_name: Option<String>,
+}
+
+impl AdvertFile {
+    fn decode(&self, id: &str) -> Result<BleAdvert, ScenarioError> {
+        let service_uuids = self
+            .service_uuids
+            .iter()
+            .map(|uuid| {
+                canonical_uuid(uuid).ok_or_else(|| {
+                    scenario_error(format!("advert service UUID '{uuid}' is not a UUID"))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let manufacturer_data = decode_hex(&self.manufacturer_data).ok_or_else(|| {
+            scenario_error(format!("peripheral '{id}': invalid manufacturerData hex"))
+        })?;
+        Ok(BleAdvert {
+            service_uuids,
+            manufacturer_data,
+            local_name: self.local_name.clone(),
+        })
+    }
 }
 
 /// `{ hex: "..." }` or `{ utf8: "..." }`.
@@ -170,6 +202,22 @@ enum PeerDisconnectTrigger {
     AwaitDisconnect,
 }
 
+#[derive(Clone)]
+struct TransferTriggerValues {
+    baseline: Vec<u8>,
+    triggered: Vec<u8>,
+}
+
+impl TransferTriggerValues {
+    fn current(&self, active: bool) -> &[u8] {
+        if active {
+            &self.triggered
+        } else {
+            &self.baseline
+        }
+    }
+}
+
 struct ScriptedNotification {
     uuid: String,
     after_fenced_write: Option<(String, u32)>,
@@ -197,11 +245,14 @@ impl BleScenario {
                         .map(|uuid| uuid.to_ascii_uppercase())
                         .collect(),
                     manufacturer_data: peripheral.advert.manufacturer_data,
+                    local_name: peripheral.advert.local_name,
                 },
             })
             .collect();
         BleScenario {
             peripherals,
+            advert_stages: BTreeMap::new(),
+            transfer_values: BTreeMap::new(),
             mtu,
             peripheral_name,
             factory: Arc::new(factory),
@@ -214,6 +265,14 @@ impl BleScenario {
     /// through the named model in the scenario's manufacturer index; the
     /// responder's arming and device-name writes are wired to `link`.
     pub fn load(path: &Path, link: SharedLink) -> Result<Self, ScenarioError> {
+        Self::load_with_manifest(path, link, None)
+    }
+
+    pub(crate) fn load_with_manifest(
+        path: &Path,
+        link: SharedLink,
+        runtime: Option<(&CameraManifest, &str)>,
+    ) -> Result<Self, ScenarioError> {
         let text = std::fs::read_to_string(path)
             .map_err(|e| scenario_error(format!("read {}: {e}", path.display())))?;
         let file: ScenarioFile = serde_yaml::from_str(&text)
@@ -264,7 +323,56 @@ impl BleScenario {
             })
         };
 
-        let catalog: Vec<String> = gatt.values().cloned().collect();
+        let mut transfer_values = BTreeMap::new();
+        if file.camera_initiated_transfer {
+            let (manifest, connection) = runtime.ok_or_else(|| {
+                scenario_error("cameraInitiatedTransfer needs a running manifest")
+            })?;
+            let transfer = manifest
+                .camera_initiated_transfer
+                .as_ref()
+                .filter(|transfer| transfer.handoff.connection == connection)
+                .ok_or_else(|| {
+                    scenario_error(format!(
+                        "the running manifest has no camera-initiated transfer on '{connection}'"
+                    ))
+                })?;
+            if transfer.trigger.states.is_empty() {
+                return Err(scenario_error(
+                    "cameraInitiatedTransfer needs at least one trigger characteristic",
+                ));
+            }
+            for state in &transfer.trigger.states {
+                let uuid = match canonical_uuid(&state.gatt) {
+                    Some(uuid) => uuid,
+                    None => resolve(&state.gatt)?,
+                };
+                let first_value = |values: &[String], kind: &str| {
+                    values
+                        .first()
+                        .and_then(|value| parse_hex_bytes(value))
+                        .ok_or_else(|| {
+                            scenario_error(format!(
+                                "cameraInitiatedTransfer '{}' needs a valid {kind} value",
+                                state.gatt
+                            ))
+                        })
+                };
+                let values = TransferTriggerValues {
+                    baseline: first_value(&state.baseline_values, "baseline")?,
+                    triggered: first_value(&state.trigger_values, "trigger")?,
+                };
+                if transfer_values.insert(uuid.clone(), values).is_some() {
+                    return Err(scenario_error(format!("cameraInitiatedTransfer declares trigger characteristic '{uuid}' more than once")));
+                }
+            }
+        }
+
+        let catalog: BTreeSet<String> = gatt
+            .values()
+            .chain(transfer_values.keys())
+            .cloned()
+            .collect();
         let reads = file
             .reads
             .iter()
@@ -317,6 +425,7 @@ impl BleScenario {
                 (arm, device_name)
             }
         };
+        let mut advert_stages = BTreeMap::new();
         let peripherals = file
             .peripherals
             .iter()
@@ -324,27 +433,23 @@ impl BleScenario {
                 let id = canonical_uuid(&peripheral.id).ok_or_else(|| {
                     scenario_error(format!("peripheral id '{}' is not a UUID", peripheral.id))
                 })?;
-                let service_uuids = peripheral
-                    .advert
-                    .service_uuids
-                    .iter()
-                    .map(|uuid| {
-                        canonical_uuid(uuid).ok_or_else(|| {
-                            scenario_error(format!("advert service UUID '{uuid}' is not a UUID"))
+                if !peripheral.advert_after_peer_disconnects.is_empty() {
+                    let stages = peripheral
+                        .advert_after_peer_disconnects
+                        .iter()
+                        .map(|(&count, advert)| {
+                            if !(1..=peer_disconnects.len()).contains(&count) {
+                                return Err(scenario_error(format!(
+                                    "peripheral '{id}': no peer-disconnect stage {count}"
+                                )));
+                            }
+                            Ok((count, advert.decode(&id)?))
                         })
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                let manufacturer_data = decode_hex(&peripheral.advert.manufacturer_data)
-                    .ok_or_else(|| {
-                        scenario_error(format!("peripheral '{id}': invalid manufacturerData hex"))
-                    })?;
-                Ok(SimulatedPeripheral {
-                    id,
-                    advert: BleAdvert {
-                        service_uuids,
-                        manufacturer_data,
-                    },
-                })
+                        .collect::<Result<BTreeMap<_, _>, ScenarioError>>()?;
+                    advert_stages.insert(id.clone(), stages);
+                }
+                let advert = peripheral.advert.decode(&id)?;
+                Ok(SimulatedPeripheral { id, advert })
             })
             .collect::<Result<Vec<_>, ScenarioError>>()?;
 
@@ -379,6 +484,8 @@ impl BleScenario {
             responder
         };
         let mut scenario = BleScenario::new(peripherals, mtu, file.peripheral_name, factory);
+        scenario.advert_stages = advert_stages;
+        scenario.transfer_values = transfer_values;
         scenario.peer_disconnects = peer_disconnects;
         scenario.link = Some(session_link);
         Ok(scenario)
@@ -444,6 +551,7 @@ pub struct BleSocket {
 
 struct Inner {
     scenario: BleScenario,
+    transfer_active: watch::Sender<bool>,
     busy: AtomicBool,
     released: Notify,
     /// The connected client's responder. Locked only for synchronous
@@ -551,6 +659,7 @@ impl BleSocket {
         BleSocket {
             inner: Arc::new(Inner {
                 scenario,
+                transfer_active: watch::Sender::new(false),
                 busy: AtomicBool::new(false),
                 released: Notify::new(),
                 active: Mutex::new(None),
@@ -562,6 +671,16 @@ impl BleSocket {
 
     pub fn scenario(&self) -> &BleScenario {
         &self.inner.scenario
+    }
+
+    pub(crate) fn set_transfer_active(&self, active: bool) {
+        self.inner.transfer_active.send_if_modified(|current| {
+            if *current == active {
+                return false;
+            }
+            *current = active;
+            true
+        });
     }
 
     /// Every finished connection's responder log in order, then the connected
@@ -625,14 +744,22 @@ impl BleSocket {
         send(&mut write, &[hello]).await?;
 
         let mut connection = Connection::default();
+        let mut transfer_active = self.inner.transfer_active.subscribe();
         let mut line = Vec::new();
         loop {
-            line.clear();
-            let read = (&mut reader)
-                .take(MAX_LINE_BYTES as u64 + 1)
-                .read_until(b'\n', &mut line)
-                .await?;
-            if read == 0 {
+            // A control event can interrupt read_until after it has buffered
+            // part of a request. Keep those bytes and their limit on resume.
+            let mut bounded = (&mut reader).take((MAX_LINE_BYTES + 1 - line.len()) as u64);
+            let read = tokio::select! {
+                result = bounded.read_until(b'\n', &mut line) => result?,
+                Ok(()) = transfer_active.changed(), if !self.inner.scenario.transfer_values.is_empty() => {
+                    let active = *transfer_active.borrow_and_update();
+                    let notifications = self.transfer_notifications(&connection, active);
+                    send(&mut write, &notifications).await?;
+                    continue;
+                }
+            };
+            if read == 0 && line.is_empty() {
                 break;
             }
             if line.len() > MAX_LINE_BYTES {
@@ -642,6 +769,7 @@ impl BleSocket {
                 break;
             }
             let (messages, after) = self.handle(&mut connection, &line);
+            line.clear();
             send(&mut write, &messages).await?;
             if let After::Close = after {
                 write.shutdown().await?;
@@ -750,12 +878,19 @@ impl BleSocket {
         match op {
             "scan_start" => {
                 for peripheral in &self.inner.scenario.peripherals {
+                    let advert = self
+                        .inner
+                        .scenario
+                        .advert_stages
+                        .get(&peripheral.id)
+                        .and_then(|stages| stages.get(&connection.next_peer_disconnect))
+                        .unwrap_or(&peripheral.advert);
                     events.push(json!({
                         "event": "advert",
                         "peripheral": peripheral.id,
-                        "service_uuids": peripheral.advert.service_uuids,
-                        "manufacturer_data": encode_hex(&peripheral.advert.manufacturer_data),
-                        "local_name": null,
+                        "service_uuids": advert.service_uuids,
+                        "manufacturer_data": encode_hex(&advert.manufacturer_data),
+                        "local_name": advert.local_name,
                         "service_data": {},
                         "tx_power": null,
                     }));
@@ -796,7 +931,13 @@ impl BleSocket {
             }
             "read" => {
                 let uuid = uuid_arg(request, "uuid")?;
-                let value = self.with_responder(|responder| responder.read(&uuid))?;
+                let value = self.with_responder(|responder| {
+                    if let Some(values) = self.inner.scenario.transfer_values.get(&uuid) {
+                        let active = *self.inner.transfer_active.borrow();
+                        responder.set_read_value(&uuid, values.current(active));
+                    }
+                    responder.read(&uuid)
+                })?;
                 result.insert("value".into(), encode_hex(&value).into());
                 if matches!(self.next_peer_disconnect(connection), Some(PeerDisconnectTrigger::AfterRead(gatt)) if gatt == &uuid)
                 {
@@ -858,6 +999,17 @@ impl BleSocket {
         Ok(result)
     }
 
+    fn transfer_notifications(&self, connection: &Connection, active: bool) -> Vec<Value> {
+        connection
+            .subscribed
+            .iter()
+            .filter_map(|uuid| {
+                let values = self.inner.scenario.transfer_values.get(uuid)?;
+                Some(notification(uuid, values.current(active)))
+            })
+            .collect()
+    }
+
     /// Every eligible notification on the subscribed characteristics: per
     /// characteristic in queue order, across characteristics in subscription
     /// order. The responder keeps one queue per characteristic, so it holds
@@ -870,13 +1022,17 @@ impl BleSocket {
         };
         for uuid in &connection.subscribed {
             while let Some(payload) = responder.take_notification(uuid) {
-                let value = encode_hex(&payload);
-                tracing::info!(target: "ble", uuid = %uuid, value = %value, "notification");
-                events.push(json!({"event": "notification", "uuid": uuid, "value": value}));
+                events.push(notification(uuid, &payload));
             }
         }
         events
     }
+}
+
+fn notification(uuid: &str, payload: &[u8]) -> Value {
+    let value = encode_hex(payload);
+    tracing::info!(target: "ble", %uuid, %value, "notification");
+    json!({"event": "notification", "uuid": uuid, "value": value})
 }
 
 async fn send<W: AsyncWrite + Unpin>(write: &mut W, messages: &[Value]) -> std::io::Result<()> {
