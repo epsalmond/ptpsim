@@ -447,12 +447,10 @@ count, scans serve the peripheral's base `advert`.
 
 Set `cameraInitiatedTransfer: true` to serve the running manifest's declared
 transfer trigger characteristics. The scenario uses the first baseline and
-trigger value declared for each characteristic. A successful state overlay
-sets which values reads return. A live change also pushes notifications on
-the currently subscribed trigger characteristics. These control-driven
-notifications can arrive between requests and report the latest state.
-Other notifications keep their request ordering. Baseline uses the
-manifest's inactive values, and the trigger uses its separate active values.
+trigger value declared for each characteristic. Reads follow the control
+overlay until it changes. A live change pushes the latest state to subscribed
+trigger characteristics and can arrive between requests. Fenced AP handoff
+notifications follow the launch script and its request ordering.
 
 `packages/fixtures/ble/gfx100ii-wake-transfer.yaml` scripts a lost baseline
 link, a startup advertisement, and an awake advertisement. After the wake

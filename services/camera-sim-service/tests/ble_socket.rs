@@ -1087,12 +1087,31 @@ async fn wake_and_transfer_fixture_pushes_the_manifest_state_to_the_reconnected_
     client.ok("discover", json!({})).await;
     client.ok("subscribe", json!({"uuid": ap_state})).await;
 
+    // The complete request puts the next request's prefix on the stream
+    // before the transfer update interrupts the server's read.
+    let complete_id = client.next_id;
+    let partial_id = complete_id + 1;
+    client.next_id += 2;
+    let prefix = format!(
+        "{{\"id\":{complete_id},\"op\":\"scan_stop\"}}\n{{\"id\":{partial_id},\"op\":\"scan_"
+    );
+    client.write.write_all(prefix.as_bytes()).await.unwrap();
+    assert_eq!(
+        client.next_message().await,
+        Some(json!({"id": complete_id, "ok": true}))
+    );
+
     patch_transfer_state(running.control_addr, true).await;
     assert_eq!(
         client.next_message().await.unwrap(),
         json!({
             "event": "notification", "uuid": ap_state, "value": "0380",
         })
+    );
+    client.write.write_all(b"stop\"}\n").await.unwrap();
+    assert_eq!(
+        client.next_message().await,
+        Some(json!({"id": partial_id, "ok": true}))
     );
     let value = client.ok("read", json!({"uuid": transfer_state})).await;
     assert_eq!(value["value"], "0180");
@@ -1117,6 +1136,8 @@ async fn wake_and_transfer_fixture_pushes_the_manifest_state_to_the_reconnected_
         assert_eq!(client.next_message().await, Some(ready));
     }
     assert!(running.link.is_armed(), "the AP handoff armed PTP/IP");
+    let value = client.ok("read", json!({"uuid": ap_state})).await;
+    assert_eq!(value["value"], "0380");
 
     patch_transfer_state(running.control_addr, false).await;
     for uuid in [&ap_state, &transfer_state] {
