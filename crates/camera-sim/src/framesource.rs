@@ -6,23 +6,6 @@ pub trait FrameSource: Send {
     fn next_frame(&mut self) -> Option<Vec<u8>>;
 }
 
-/// Repeats a single JPEG forever — the simplest deterministic source for tests.
-pub struct StaticFrameSource {
-    jpeg: Vec<u8>,
-}
-
-impl StaticFrameSource {
-    pub fn new(jpeg: Vec<u8>) -> Self {
-        StaticFrameSource { jpeg }
-    }
-}
-
-impl FrameSource for StaticFrameSource {
-    fn next_frame(&mut self) -> Option<Vec<u8>> {
-        Some(self.jpeg.clone())
-    }
-}
-
 /// Cycles through a fixed set of frames (e.g. a directory of MJPEG frames).
 pub struct LoopingFrameSource {
     frames: Vec<Vec<u8>>,

@@ -120,10 +120,10 @@ pub struct FaultSpec {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FaultRule {
-    pub id: u64,
-    pub selector: FaultSelector,
-    pub mutation: FaultMutation,
+struct FaultRule {
+    id: u64,
+    selector: FaultSelector,
+    mutation: FaultMutation,
     seen: u32,
     applied: u32,
 }

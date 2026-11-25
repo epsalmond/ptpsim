@@ -413,7 +413,10 @@ context, that goes into the canonical bundle, not into a second generator.
 Responsibilities:
 
 - Filesystem-backed camera card model.
-- Symlink-safe traversal with explicit root confinement.
+- Symlink-safe traversal with explicit root confinement. A file symlink is
+  listed when its target resolves inside the root. Symlinks that escape the
+  root, dangle, or point at a directory are skipped, so a link back to an
+  ancestor cannot make the scan recurse.
 - Stable object handle assignment.
 - Folder/date grouping views used by Fuji image import.
 - ObjectInfo generation for JPEG, RAF, MOV, HEIF, and unknown files.
@@ -1588,9 +1591,10 @@ Concrete gates before replacing C vcam in App Review:
 1. `ptp-core` golden packet tests pass for InitCommandRequest/Ack,
    OpenSession, GetObjectInfo, GetThumb, GetPartialObject, SetDevicePropValue,
    and Fuji event packets.
-2. Media-store tests prove symlink escapes are rejected, in-root symlinks work,
-   RAF thumbnail extraction reads bounded ranges, and a logical `>4 GB` MOV is
-   represented without allocating the full size.
+2. Media-store tests prove symlink escapes are rejected, in-root file symlinks
+   work, directory symlinks (including loops) are skipped, RAF thumbnail
+   extraction reads bounded ranges, and a logical `>4 GB` MOV is represented
+   without allocating the full size.
 3. Fuji image-import session-flow test completes from init through handles,
    thumbnails, partial download, and close.
 4. Fuji live-view session-flow test opens all three sockets, streams frames, and
