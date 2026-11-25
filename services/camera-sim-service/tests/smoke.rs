@@ -2453,6 +2453,73 @@ async fn service_serves_builtin_wireless_tether_liveview() {
     handle.await.unwrap();
 }
 
+#[tokio::test]
+async fn pcss_poll_faults_apply_to_rendered_reply() {
+    use ptp_core::codes::op as code;
+
+    let card = tempfile::tempdir().unwrap();
+    let frames = tempfile::tempdir().unwrap();
+    let jpeg = include_bytes!("../../../packages/fixtures/liveview/640x480/frame_02.jpg");
+    std::fs::write(frames.path().join("frame.jpg"), jpeg).unwrap();
+    let server = Server::bind(Config {
+        instance_id: "pcss-poll-faults".into(),
+        profile: "fuji/gfx100ii/fw0230".into(),
+        connection: "wireless-tether".into(),
+        manifest_yaml: real_gfx_manifest(),
+        media_root: card.path().to_path_buf(),
+        command_bind: Some("127.0.0.1:0".parse().unwrap()),
+        liveview_bind: None,
+        event_bind: None,
+        knock_bind: None,
+        pcss_init_fails: 0,
+        pcss_shutter_enqueue_count: 0,
+        control_bind: "127.0.0.1:0".parse().unwrap(),
+        liveview_dir: Some(frames.path().to_path_buf()),
+        state_callback: None,
+    })
+    .await
+    .unwrap();
+    let command = server.command_addr();
+    let control = server.control_addr();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let handle = tokio::spawn(server.run(shutdown_rx));
+
+    tokio::task::spawn_blocking(move || {
+        let mut cmd = connect_pcss(command, "sim");
+        cmd.set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .unwrap();
+        open_session(&mut cmd);
+        set_prop(&mut cmd, 2, 0xd1bc, &2u16.to_le_bytes());
+        write_frame(&mut cmd, &op(code::INITIATE_OPEN_CAPTURE, 3, vec![0, 0]));
+        read_ok(&mut cmd);
+
+        write_frame(&mut cmd, &op(0x9018, 4, vec![]));
+        assert_eq!(read_data_reply(&mut cmd), jpeg.as_slice());
+        let id = install_fault(
+            control,
+            serde_json::json!({
+                "operation":"0x9018", "count":1,
+                "mutation":{"type":"replaceData","bytesHex":"74657374"}
+            }),
+        );
+        write_frame(&mut cmd, &op(0x9018, 5, vec![]));
+        assert_eq!(read_data_reply(&mut cmd), b"test");
+        let snapshot: serde_json::Value =
+            serde_json::from_str(http_body(&http_get(control, "/faults"))).unwrap();
+        assert_eq!(snapshot["faults"][0]["id"], id);
+        assert_eq!(snapshot["faults"][0]["applied"], 1);
+        assert_eq!(snapshot["faults"][0]["exhausted"], true);
+        assert!(http_delete(control, &format!("/faults/{id}")).starts_with("HTTP/1.1 200"));
+        write_frame(&mut cmd, &op(0x9018, 6, vec![]));
+        assert_eq!(read_data_reply(&mut cmd), jpeg.as_slice());
+    })
+    .await
+    .unwrap();
+
+    shutdown_tx.send(()).unwrap();
+    handle.await.unwrap();
+}
+
 #[test]
 fn pcss_init_fail_retries_then_accepts() {
     let _tmp_card = tmp_card();

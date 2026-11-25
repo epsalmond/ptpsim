@@ -210,6 +210,7 @@ impl ConnectionLifecycles {
         sender: u64,
         request: &OperationRequest,
         data: Option<&[u8]>,
+        materialize_data: impl FnOnce() -> Option<Vec<u8>>,
     ) -> Reply {
         let mut state = self
             .state
@@ -232,7 +233,12 @@ impl ConnectionLifecycles {
         // Feature detection compares against the tracker passed to the engine.
         // Use the owner's evidence so a sender with an unknown feature still
         // records transitions out of the shared session's active feature.
-        let reply = engine.on_operation_with_connection_lifecycle(lifecycle, request, data);
+        let reply = engine.on_wire_operation_with_connection_lifecycle(
+            lifecycle,
+            request,
+            data,
+            materialize_data,
+        );
         let transitions = lifecycle
             .trace()
             .iter()
@@ -2501,17 +2507,13 @@ async fn handle_command_conn_inner(
             None
         };
         let _declared_aux_sync = declared_aux_sync.lock().await;
-        let (
-            reply,
-            applied_fault,
-            events,
-            is_poll_live_view,
-            observation_context,
-            aux_readiness,
-            event_generation,
-        ) = {
+        let (reply, applied_fault, events, observation_context, aux_readiness, event_generation) = {
+            let mut live_view_frames = if context.poll_live_view_op == Some(req.code) {
+                Some(frames.lock().await)
+            } else {
+                None
+            };
             let mut e = engine.lock().await;
-            let is_poll_live_view = context.poll_live_view_op == Some(req.code);
             let mut owner = session_owner.lock().await;
             let reply = lifecycles.dispatch_operation(
                 &mut e,
@@ -2519,6 +2521,11 @@ async fn handle_command_conn_inner(
                 session_sequence,
                 &req,
                 data_in.as_deref(),
+                || {
+                    live_view_frames
+                        .as_mut()
+                        .and_then(|frames| frames.next_frame())
+                },
             );
             if req.code == op::OPEN_SESSION && reply_is_ok(&reply) {
                 command_trace.mark_new_session();
@@ -2535,7 +2542,6 @@ async fn handle_command_conn_inner(
                 reply,
                 applied_fault,
                 e.drain_events(),
-                is_poll_live_view,
                 observation_context,
                 declared_aux
                     .iter()
@@ -2555,11 +2561,6 @@ async fn handle_command_conn_inner(
                 .inspect_err(|_| command_trace.mark_terminal("transportAbort"))?;
         }
         drop(_declared_aux_sync);
-        let reply = if is_poll_live_view {
-            poll_live_view_reply(reply, &frames).await
-        } else {
-            reply
-        };
         let request = PtpRequest {
             framing: observation_framing(context.command_framing).into(),
             operation: format!("0x{:04x}", req.code),
@@ -2987,19 +2988,6 @@ async fn read_exact_with_prefix<R: AsyncRead + Unpin>(
         }
     }
     Ok(())
-}
-
-async fn poll_live_view_reply(reply: Reply, frames: &Arc<Mutex<LoopingFrameSource>>) -> Reply {
-    let Reply::Response(response) = reply else {
-        return reply;
-    };
-    if response.code != resp::OK {
-        return Reply::Response(response);
-    }
-    let Some(data) = frames.lock().await.next_frame() else {
-        return Reply::Response(response);
-    };
-    Reply::Data { data, response }
 }
 
 /// Push completion/lifecycle events to one connected event-socket client until

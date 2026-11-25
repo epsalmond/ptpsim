@@ -1035,6 +1035,25 @@ impl Engine {
     /// Handle one operation. `data_in` carries an initiator data phase (e.g. the
     /// value for `SetDevicePropValue`).
     pub fn on_operation(&mut self, req: &OperationRequest, data_in: Option<&[u8]>) -> Reply {
+        let reply = self.on_operation_with_data(req, data_in, || None);
+        if matches!(reply, Reply::Response(_))
+            && self
+                .applied_fault
+                .as_ref()
+                .is_some_and(|fault| fault.wire == crate::fault::WirePlan::SuppressResponse)
+        {
+            Reply::NoResponse
+        } else {
+            reply
+        }
+    }
+
+    fn on_operation_with_data(
+        &mut self,
+        req: &OperationRequest,
+        data_in: Option<&[u8]>,
+        materialize_data: impl FnOnce() -> Option<Vec<u8>>,
+    ) -> Reply {
         let applied = self.faults.apply(req.code, &req.params);
         let applied_mutation = self.faults.take_applied_mutation();
         let mut reply = match applied_mutation.as_ref() {
@@ -1047,11 +1066,18 @@ impl Engine {
             _ => self.dispatch_operation(req, data_in),
         };
 
+        if let Reply::Response(response) = &reply {
+            if response.code == resp::OK {
+                if let Some(data) = materialize_data() {
+                    reply = Reply::Data {
+                        data,
+                        response: response.clone(),
+                    };
+                }
+            }
+        }
         if let Some(mutation) = &applied_mutation {
             match mutation {
-                FaultMutation::Suppress {
-                    stage: crate::fault::DataOrResponse::Response,
-                } if matches!(reply, Reply::Response(_)) => reply = Reply::NoResponse,
                 FaultMutation::TruncateData { keep } => truncate_reply_data(&mut reply, *keep),
                 FaultMutation::ReplaceData { bytes } => replace_reply_data(&mut reply, bytes),
                 FaultMutation::PropertyReadback { value } => {
@@ -1066,6 +1092,22 @@ impl Engine {
             }
         }
         self.applied_fault = applied;
+        reply
+    }
+
+    /// Dispatch a command for a wire transport. It can supply fixture data for
+    /// a successful response before reply faults apply. The transport owns
+    /// phase suppression and writes the remaining phases.
+    pub fn on_wire_operation_with_connection_lifecycle(
+        &mut self,
+        lifecycle: &mut ConnectionLifecycleTracker,
+        req: &OperationRequest,
+        data_in: Option<&[u8]>,
+        materialize_data: impl FnOnce() -> Option<Vec<u8>>,
+    ) -> Reply {
+        std::mem::swap(&mut self.lifecycle, lifecycle);
+        let reply = self.on_operation_with_data(req, data_in, materialize_data);
+        std::mem::swap(&mut self.lifecycle, lifecycle);
         reply
     }
 
