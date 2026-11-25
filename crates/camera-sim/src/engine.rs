@@ -1845,9 +1845,10 @@ impl Engine {
                     transfer.handoff.connection == self.connection && transfer.receive.mode == mode
                 })
         });
+        let left_queued_receive = !transfer_active && self.state.phase == Phase::QueuedReceive;
         if transfer_active {
             self.state.phase = Phase::QueuedReceive;
-        } else if self.state.phase == Phase::QueuedReceive {
+        } else if left_queued_receive {
             self.state.phase = Phase::SessionOpen;
         }
         if previous_mode == detected {
@@ -1868,7 +1869,9 @@ impl Engine {
         // A change between two modes that declare the same phase keeps the
         // current phase (#570): a live-view selector write that moves the
         // session between sibling modes must not reset Streaming to LiveView.
-        if !transfer_active && new_declared != previous_declared {
+        // Leaving a queued receive is the exception: the phase was just reset
+        // to SessionOpen above, so the new mode's declared phase still applies.
+        if !transfer_active && (new_declared != previous_declared || left_queued_receive) {
             if let Some(phase) = new_declared {
                 self.state.phase = phase;
             }
