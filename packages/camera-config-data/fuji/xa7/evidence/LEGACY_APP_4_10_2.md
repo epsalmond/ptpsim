@@ -149,9 +149,14 @@ step in the app.
   `2A25` read starts bonding, both values are persisted, and the SSID drives
   the Wi-Fi join.
 - **AP-state subscribe.** Strict, unlike a single CCCD in the app: the app
-  never marks the link ready when the remaining CCCD writes all fail, and a
-  tolerant step cannot express that, so this step keeps a walk from completing
-  on a dropped link.
+  never marks the link ready when the remaining CCCD writes fail without a
+  callback, as on a dropped link, and a tolerant step cannot express that.
+- **Tail AP-state read.** Strict, unlike the app: the app marks the link ready
+  without waiting for the tail reads. The manifest keeps this read strict so a
+  walk cannot complete on a link that dropped after the AP-state subscribe.
+  With these two guards, a link that drops anywhere up to this read fails the
+  walk. Only a drop during the final transfer-state read, which is tolerant
+  and the last step, can still complete.
 - **Tolerance model.** A tolerant manifest step continues past any failure.
   The app's continuation depends on the kind of failure, as listed above.
 - **Launch-time reconnect and resubscribe.** `legacy-app-establish-wifi-ap`
