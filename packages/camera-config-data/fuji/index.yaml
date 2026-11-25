@@ -571,8 +571,13 @@ families:
             - bleSubscribe: { gatt: iptcSetting,           timeoutMs: 3000, tolerant: true }
             - bleSubscribe: { gatt: locationSyncCycle,     timeoutMs: 3000, tolerant: true }
 
-        # Legacy mobile app 4.10.2 registration for the X-A7. Its queue, MTU
-        # pacing, CCCD modes, and AP states differ from the family path above.
+        # X-A7 registration. Mirrors the wire behavior of the legacy vendor
+        # mobile app 4.10.2 as recorded in xa7/evidence/LEGACY_APP_4_10_2.md.
+        # Which event ends the camera's pairing screen is unknown (#355), so no
+        # step is marked `confirms: registration` and a completed walk does not
+        # show that the camera accepted the registration. A read or CCCD error
+        # does not stop the app's registration, so those steps are tolerant
+        # unless a comment gives the reason they are strict.
         legacy-app-pair:
           mechanism: legacy-app-pair
           persist: [pairingKeyBytes, style, shortSerial, cameraSerial, ssid]
@@ -596,15 +601,23 @@ families:
                 gatt: connectedDeviceBleProtocolVersion
                 value: { literal: "0200" }
                 tolerant: true
+            # Stands in for the app's 0x2A00 read on hosts without GAP access
+            # (schema 11.4b). Strict, unlike the app: the app sends the second
+            # name write below only after a successful name read.
             - blePeripheralName: { captureAs: cameraName }
             - bleWrite:
                 gatt: deviceNameString
                 value: { runtime: terminalName, encoding: utf8, transform: { appendNul: {} } }
+            # Strict, unlike the app: on iOS this read starts bonding, and the
+            # serial is persisted.
             - bleRead: { gatt: protectedSerialString, encoding: utf8-cstring, captureAs: cameraSerial }
+            # Strict, unlike the app: the SSID is persisted and drives the
+            # Wi-Fi join after a function launch.
             - bleRead: { gatt: cameraSSIDNameString, encoding: utf8-cstring, captureAs: ssid }
-            - bleRead: { gatt: reservationAfterShooting, encoding: bytes, captureAs: reservationAfterShooting }
-            - bleRead: { gatt: pairedSmartDeviceCount, encoding: bytes, captureAs: pairedSmartDeviceCount }
-            - bleRead: { gatt: firmwareRevisionString, encoding: utf8-cstring, captureAs: firmware }
+            # The app uses the reservation setting only for analytics.
+            - bleRead: { gatt: reservationAfterShooting, encoding: bytes, captureAs: reservationAfterShooting, tolerant: true }
+            - bleRead: { gatt: pairedSmartDeviceCount, encoding: bytes, captureAs: pairedSmartDeviceCount, tolerant: true }
+            - bleRead: { gatt: firmwareRevisionString, encoding: utf8-cstring, captureAs: firmware, tolerant: true }
             - bleRead: { gatt: lensProductName, encoding: utf8-cstring, captureAs: lensProductName, tolerant: true }
             - bleRead: { gatt: lensFirmwareVersion, encoding: utf8-cstring, captureAs: lensFirmware, tolerant: true }
             - bleRead: { gatt: wakeupMode, encoding: bytes, captureAs: wakeupMode, tolerant: true }
@@ -614,14 +627,20 @@ families:
             - bleRead: { gatt: movieButton, encoding: bytes, captureAs: movieButton, tolerant: true }
             - bleRead: { gatt: cameraBleProtocolVersion, encoding: u16-le, captureAs: cameraBleProtocolVersion, tolerant: true }
             - bleSubscribe: { gatt: cameraSSIDNameString, timeoutMs: 3000, mode: indicate, tolerant: true }
-            - bleSubscribe: { gatt: apState, timeoutMs: 3000, mode: indicate }
+            - bleSubscribe: { gatt: apState, timeoutMs: 3000, mode: indicate, tolerant: true }
             - bleSubscribe: { gatt: transferState, timeoutMs: 3000, mode: indicate, tolerant: true }
             - bleSubscribe: { gatt: dateSyncState, timeoutMs: 3000, mode: notify, tolerant: true }
             - bleSubscribe: { gatt: locationSyncState, timeoutMs: 3000, mode: notify, tolerant: true }
             - bleSubscribe: { gatt: firmwareUpdateState, timeoutMs: 3000, mode: indicate, tolerant: true }
-            - bleRead: { gatt: apState, encoding: u16-le, captureAs: apState }
+            # The app issues these two reads in parallel with marking the link
+            # ready and does not wait for them.
+            - bleRead: { gatt: apState, encoding: u16-le, captureAs: apState, tolerant: true }
             - bleRead: { gatt: transferState, encoding: u16-le, captureAs: transferState, tolerant: true }
 
+        # X-A7 saved-key reconnect. The legacy vendor mobile app replays the
+        # same registration queue with the saved key, so this plan shares the
+        # registration steps above. Which event ends the camera's pairing
+        # screen is unknown (#355); no step is marked `confirms: registration`.
         legacy-app-reconnect:
           mechanism: legacy-app-reconnect
           persist: [pairingKeyBytes, style, shortSerial, cameraSerial, ssid]
