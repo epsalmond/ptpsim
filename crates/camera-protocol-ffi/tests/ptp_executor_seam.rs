@@ -3028,9 +3028,10 @@ fn aggregate_step_deadline_cancels_the_pending_foreign_read() {
 
 // --- Action failure conditions (MANIFEST_SCHEMA §11.33, #352) ---------------
 //
-// The GFX100 II `enumerateObjects` action declares that a final 0x9050
-// failure answering 0x2019 is `mediaSlotUnavailable` for slot 1. The simulator
-// produces that failure through its `memoryCardSlot1Empty` state.
+// The GFX100 II `enumerateObjects` and `importObjects` actions declare that a
+// final 0x9050 failure answering 0x2019 is `mediaSlotUnavailable` for slot 1.
+// Both run the same prime retry. The simulator produces that failure through
+// its `memoryCardSlot1Empty` state.
 
 const EMPTY_SLOT_STATE: &str = "memoryCardSlot1Empty";
 
@@ -3109,6 +3110,21 @@ fn enumerate(
     ))
 }
 
+fn import_objects(
+    store: Arc<ConfigStore>,
+    transport: Arc<EngineTransport>,
+) -> Result<PtpExecutionOutcome, PtpExecutorError> {
+    block_on(run_initiator_action(
+        store,
+        "app".into(),
+        ActionVerb::ImportObjects,
+        transport,
+        Arc::new(Reports::default()),
+        Arc::new(Activities::default()),
+        Vec::new(),
+    ))
+}
+
 fn context_keys(context: &[camera_protocol_ffi::KeyValue]) -> Vec<&str> {
     context.iter().map(|entry| entry.key.as_str()).collect()
 }
@@ -3122,8 +3138,13 @@ fn context_value<'a>(context: &'a [camera_protocol_ffi::KeyValue], key: &str) ->
         .as_str()
 }
 
-/// Assert `error` is the classified empty-slot import failure.
-fn assert_empty_slot_condition(error: &PtpExecutorError) {
+/// Step path of the prime retry's 0x9050 in `enumerateObjects`.
+const ENUMERATE_PRIME_STEP: &str = "steps[0].retry.steps[0].sendOp";
+/// Step path of the same 0x9050 in `importObjects`, after its nine arm steps.
+const IMPORT_PRIME_STEP: &str = "steps[9].retry.steps[0].sendOp";
+
+/// Assert `error` is the classified empty-slot import failure at `expected_step`.
+fn assert_empty_slot_condition_at(error: &PtpExecutorError, expected_step: &str) {
     let PtpExecutorError::StepFailed {
         step,
         kind,
@@ -3134,7 +3155,7 @@ fn assert_empty_slot_condition(error: &PtpExecutorError) {
         panic!("expected StepFailed, got {error:?}");
     };
     assert_eq!(*kind, ExecutorStepFailureKind::ConditionRejected);
-    assert_eq!(step, "steps[0].retry.steps[0].sendOp");
+    assert_eq!(step, expected_step);
     assert_eq!(detail, "operation 0x9050 returned 0x2019");
     assert_eq!(
         context_keys(context),
@@ -3153,6 +3174,11 @@ fn assert_empty_slot_condition(error: &PtpExecutorError) {
         .is_ok());
     assert_eq!(context_value(context, "condition"), "mediaSlotUnavailable");
     assert_eq!(context_value(context, "slot"), "1");
+}
+
+/// Assert `error` is the classified empty-slot failure from `enumerateObjects`.
+fn assert_empty_slot_condition(error: &PtpExecutorError) {
+    assert_empty_slot_condition_at(error, ENUMERATE_PRIME_STEP);
 }
 
 #[test]
@@ -3196,6 +3222,30 @@ fn transient_import_refusal_recovers_without_classification() {
     enumerate(store, transport.clone(), Arc::new(Activities::default()))
         .expect("a brief 0x2019 is retried away");
     assert_eq!(transport.request_count(0x9050, &[]), 3);
+}
+
+#[test]
+fn empty_slot_import_objects_reports_the_declared_condition() {
+    let store = store();
+    let transport = image_transfer_transport(&store);
+    transport.enter_state(EMPTY_SLOT_STATE);
+
+    let error =
+        import_objects(store, transport.clone()).expect_err("every import attempt is refused");
+
+    assert_empty_slot_condition_at(&error, IMPORT_PRIME_STEP);
+    // The rule does not shorten the retry: all five attempts run first.
+    assert_eq!(transport.request_count(0x9050, &[]), 5);
+    assert_eq!(transport.request_count(0x1015, &[0xd620]), 0);
+}
+
+#[test]
+fn import_objects_succeeds_without_the_empty_slot_state() {
+    let store = store();
+    let transport = image_transfer_transport(&store);
+    import_objects(store, transport.clone()).expect("import succeeds with a card in slot 1");
+    assert_eq!(transport.request_count(0x9050, &[]), 1);
+    assert_eq!(transport.request_count(0x1015, &[0xd620]), 1);
 }
 
 /// Run enumeration with a persistent fault and return the escaping error.

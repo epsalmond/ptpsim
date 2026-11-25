@@ -3915,22 +3915,28 @@ fn connection_wire_framing_is_declared_in_the_manifest() {
 fn failure_conditions_load_through_the_ffi_store_without_an_ffi_type() {
     // MANIFEST_SCHEMA §11.33: the executor reads the rules from the loaded
     // manifest, so the action record keeps its shape and no FFI type carries
-    // them. Both shipped GFX100 II manifests declare the enumeration rule.
+    // them. Both shipped GFX100 II manifests declare the empty slot rule on
+    // the two actions that run the image-import prime retry.
     for yaml in [
         data("fuji/gfx100ii/gfx100ii.yaml"),
         data("fuji/gfx100ii/gfx100ii.consolidated.yaml"),
     ] {
         let manifest = camera_config::CameraManifest::from_yaml(&yaml).expect("manifest loads");
-        let initiator = manifest
-            .action("app", camera_config::ActionVerb::EnumerateObjects)
-            .and_then(|action| action.initiator.as_ref())
-            .expect("app enumerateObjects initiator");
-        let rule = initiator
-            .failure_condition(0x9050, 0x2019)
-            .expect("empty slot rule");
-        assert_eq!(rule.condition.name(), "mediaSlotUnavailable");
-        assert_eq!(rule.context.get("slot").map(String::as_str), Some("1"));
-        assert_eq!(initiator.failure_conditions.len(), 1);
+        for verb in [
+            camera_config::ActionVerb::EnumerateObjects,
+            camera_config::ActionVerb::ImportObjects,
+        ] {
+            let initiator = manifest
+                .action("app", verb)
+                .and_then(|action| action.initiator.as_ref())
+                .unwrap_or_else(|| panic!("app {verb:?} initiator"));
+            let rule = initiator
+                .failure_condition(0x9050, 0x2019)
+                .unwrap_or_else(|| panic!("{verb:?} empty slot rule"));
+            assert_eq!(rule.condition.name(), "mediaSlotUnavailable");
+            assert_eq!(rule.context.get("slot").map(String::as_str), Some("1"));
+            assert_eq!(initiator.failure_conditions.len(), 1);
+        }
     }
     for store in [store(), consolidated_store()] {
         let action = store
