@@ -1831,7 +1831,10 @@ impl Engine {
             .iter()
             .filter_map(|(code, value)| value_to_i64(value).map(|value| (*code, value)))
             .collect();
-        let detected = self.manifest.detect_mode(&observed).map(str::to_string);
+        let detected = self
+            .manifest
+            .detect_mode(&self.connection, &observed)
+            .map(str::to_string);
         let previous_mode = self.state.active_mode.clone();
         self.state.active_mode = detected.clone();
         let transfer_active = detected.as_deref().is_some_and(|mode| {
@@ -1842,9 +1845,10 @@ impl Engine {
                     transfer.handoff.connection == self.connection && transfer.receive.mode == mode
                 })
         });
+        let left_queued_receive = !transfer_active && self.state.phase == Phase::QueuedReceive;
         if transfer_active {
             self.state.phase = Phase::QueuedReceive;
-        } else if self.state.phase == Phase::QueuedReceive {
+        } else if left_queued_receive {
             self.state.phase = Phase::SessionOpen;
         }
         if previous_mode == detected {
@@ -1862,7 +1866,12 @@ impl Engine {
         };
         let previous_declared = declared(previous_mode.as_deref());
         let new_declared = declared(detected.as_deref());
-        if !transfer_active {
+        // A change between two modes that declare the same phase keeps the
+        // current phase (#570): a live-view selector write that moves the
+        // session between sibling modes must not reset Streaming to LiveView.
+        // Leaving a queued receive is the exception: the phase was just reset
+        // to SessionOpen above, so the new mode's declared phase still applies.
+        if !transfer_active && (new_declared != previous_declared || left_queued_receive) {
             if let Some(phase) = new_declared {
                 self.state.phase = phase;
             }
@@ -3850,6 +3859,55 @@ properties:
         ));
         assert!(engine.channel_ready(camera_config::SocketRole::Event));
         assert!(engine.channel_ready(camera_config::SocketRole::LiveView));
+    }
+
+    /// #570: a selector write that moves a streaming session between two modes
+    /// that both declare `liveView` keeps the phase and the live-view feature.
+    #[test]
+    fn same_phase_mode_transition_keeps_streaming() {
+        let manifest = CameraManifest::from_yaml(
+            r#"
+schema: camera-config/v1
+camera: { manufacturer: TESTCO, model: TM1, firmware: "1" }
+connections:
+  app: { kind: ptpip, modes: [stills, video] }
+modes:
+  stills: { detect: { prop: "0xd001", eq: 1 }, phase: liveView }
+  video: { detect: { prop: "0xd001", eq: 2 }, phase: liveView }
+operations:
+  "0x101c": { name: InitiateOpenCapture }
+properties:
+  "0xd001": { name: selector, type: u16, access: readWrite }
+"#,
+        )
+        .unwrap();
+        let mut engine = Engine::new(manifest, empty_store());
+        let select = |engine: &mut Engine, tid, value: u16| {
+            response_code_of(engine.on_operation(
+                &req(op::SET_DEVICE_PROP_VALUE, tid, vec![0xd001]),
+                Some(&value.to_le_bytes()),
+            ))
+        };
+        assert_ok_open(&mut engine);
+        assert_eq!(select(&mut engine, 2, 1), resp::OK);
+        assert_eq!(engine.phase(), Phase::LiveView);
+        assert!(reply_is_ok(
+            &engine.on_operation(&req(op::INITIATE_OPEN_CAPTURE, 3, vec![]), None)
+        ));
+        assert_eq!(engine.phase(), Phase::Streaming);
+        let lifecycle_events = engine.connection_lifecycle_trace().len();
+
+        assert_eq!(select(&mut engine, 4, 2), resp::OK);
+        assert_eq!(engine.state.active_mode.as_deref(), Some("video"));
+        assert_eq!(engine.phase(), Phase::Streaming);
+        assert_eq!(select(&mut engine, 5, 1), resp::OK);
+        assert_eq!(engine.state.active_mode.as_deref(), Some("stills"));
+        assert_eq!(engine.phase(), Phase::Streaming);
+        assert_eq!(
+            engine.connection_lifecycle_trace().len(),
+            lifecycle_events,
+            "the live-view feature is neither exited nor re-entered"
+        );
     }
 
     #[test]

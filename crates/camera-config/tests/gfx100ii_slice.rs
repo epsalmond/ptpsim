@@ -282,14 +282,17 @@ fn camera_initiated_transfer_references_are_complete() {
 fn mode_detect_from_function_mode() {
     let m = gfx();
     assert_eq!(
-        m.detect_mode(&PropView::new().with(0xdf01, 0x16)),
+        m.detect_mode("app", &PropView::new().with(0xdf01, 0x16)),
         Some("shooting/stills")
     );
     assert_eq!(
-        m.detect_mode(&PropView::new().with(0xdf01, 0x14)),
+        m.detect_mode("app", &PropView::new().with(0xdf01, 0x14)),
         Some("image-transfer")
     );
-    assert_eq!(m.detect_mode(&PropView::new().with(0xdf01, 0x99)), None);
+    assert_eq!(
+        m.detect_mode("app", &PropView::new().with(0xdf01, 0x99)),
+        None
+    );
 }
 
 #[test]
@@ -2655,4 +2658,114 @@ fn raf_embedded_jpeg_locator_parses_from_the_media_table() {
     assert_eq!(ej.endian, Endian::Big);
     // A non-RAW format has no locator.
     assert!(media.formats["0x3801"].embedded_jpeg.is_none());
+}
+
+/// #570: the reduced app video-selector bundle validates, and the manifest's
+/// app selector entries, observed scopes, and detection agree with it.
+#[test]
+fn app_video_selector_bundle_backs_app_video_detection() {
+    let bundle =
+        data("fuji/gfx100ii/evidence/app-video-selector/2026-05-18-app-video-selector-ops.jsonl");
+    let validated =
+        camera_config::validate_bundles(&[&bundle]).expect("app video-selector bundle validates");
+    let transactions: Vec<_> = validated
+        .records
+        .iter()
+        .filter_map(|record| match record {
+            ObservationLine::PtpTransaction(transaction) => Some(transaction.as_ref()),
+            _ => None,
+        })
+        .collect();
+    let events: Vec<_> = validated
+        .records
+        .iter()
+        .filter_map(|record| match record {
+            ObservationLine::PtpEvent(event) => Some(event.event.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(events, ["0xc004", "0x400d"]);
+    let operations: Vec<_> = transactions
+        .iter()
+        .map(|transaction| transaction.request.operation.as_str())
+        .collect();
+    assert_eq!(operations, ["0x1016", "0x9020", "0x9021", "0x1016"]);
+    assert!(transactions.iter().all(|transaction| transaction
+        .response
+        .as_ref()
+        .is_some_and(|response| response.code == "0x2001" && response.data.is_none())));
+    // The close carries the open's transaction id.
+    assert_eq!(
+        transactions[2].request.parameters,
+        [transactions[1].transaction_id]
+    );
+
+    // The manifest's selector entries write the captured values.
+    let m = gfx();
+    let selector_write = |from: &str, to: &str| {
+        let entry = m.connections["app"]
+            .entries
+            .iter()
+            .find(|entry| entry.to == to && entry.from.as_deref() == Some(from))
+            .expect("selector entry");
+        let [step] = entry.ptp_steps().expect("PTP entry") else {
+            panic!("one selector write");
+        };
+        (
+            step.set_prop.clone().expect("setProp"),
+            step.value.as_ref().and_then(SetPropValue::literal),
+        )
+    };
+    for (transaction, (from, to)) in [
+        (transactions[0], ("shooting/stills", "shooting/video")),
+        (transactions[3], ("shooting/video", "shooting/stills")),
+    ] {
+        let (property, value) = selector_write(from, to);
+        assert_eq!(
+            transaction.request.parameters,
+            [parse_hex_code(&property).unwrap() as u32]
+        );
+        let captured = transaction
+            .request
+            .data
+            .as_ref()
+            .and_then(|data| data.payload.inline_hex.as_deref())
+            .expect("selector data phase");
+        assert_eq!(value, i64::from_str_radix(captured, 16).ok());
+    }
+
+    // The observed pair is recorded as observed scopes in app video.
+    for code in ["0x9020", "0x9021"] {
+        let operation = &m.operations[code];
+        assert!(operation.modes.iter().any(|mode| mode == "shooting/video"));
+        assert!(operation
+            .evidence
+            .iter()
+            .any(|id| id == "wireAppVideoSelectorOps20260518"));
+        assert!(operation
+            .observed_scopes
+            .iter()
+            .any(|scope| scope.connection == "app" && scope.mode == "shooting/video"));
+    }
+    // Carried rows list the mode without an observed scope for it.
+    for code in ["0x9022", "0x902c", "0x902d", "0x902e"] {
+        let operation = &m.operations[code];
+        assert!(operation.modes.iter().any(|mode| mode == "shooting/video"));
+        assert!(operation.observed_scopes.is_empty(), "{code}");
+    }
+
+    // Detection: video on app only, and only with the selector observed at 1.
+    let video = PropView::new().with(0xdf01, 0x16).with(0xd246, 1);
+    assert_eq!(m.detect_mode("app", &video), Some("shooting/video"));
+    for connection in ["wireless-tether", "usb"] {
+        assert_eq!(
+            m.detect_mode(connection, &video),
+            Some("shooting/stills"),
+            "{connection}"
+        );
+    }
+    assert_eq!(
+        m.detect_mode("app", &PropView::new().with(0xdf01, 0x16)),
+        Some("shooting/stills")
+    );
 }

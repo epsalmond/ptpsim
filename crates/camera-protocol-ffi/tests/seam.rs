@@ -2606,6 +2606,58 @@ fn detect_mode_from_observed_function_mode() {
 }
 
 #[test]
+fn detect_mode_uses_the_connection_for_the_app_video_selector() {
+    // #570: the connection argument selects connection-scoped detection.
+    let s = store();
+    let observe = |selector: Option<i64>| {
+        let mut observed = vec![PropObservation {
+            code: 0xdf01,
+            value: 0x16,
+        }];
+        observed.extend(selector.map(|value| PropObservation {
+            code: 0xd246,
+            value,
+        }));
+        observed
+    };
+    assert_eq!(
+        s.detect_mode("app".into(), observe(Some(1))).as_deref(),
+        Some("shooting/video")
+    );
+    assert_eq!(
+        s.detect_mode("wireless-tether".into(), observe(Some(1)))
+            .as_deref(),
+        Some("shooting/stills")
+    );
+    assert_eq!(
+        s.detect_mode("app".into(), observe(Some(0))).as_deref(),
+        Some("shooting/stills")
+    );
+    assert_eq!(
+        s.detect_mode("app".into(), observe(None)).as_deref(),
+        Some("shooting/stills"),
+        "an unobserved selector falls back to stills"
+    );
+
+    // Consumer-visible consequences. Rows carried into video are available
+    // there; stills-only rows are not.
+    let in_video =
+        |op| s.operation_available("app".into(), "shooting/video".into(), op, observe(Some(1)));
+    assert!(matches!(in_video(0x902c), Availability::Available));
+    assert!(matches!(in_video(0x9020), Availability::Available));
+    assert!(matches!(in_video(0x9026), Availability::WrongMode));
+    // No entry leaves video for image transfer directly; a client returns to
+    // stills first.
+    assert!(s
+        .mode_entry(
+            "app".into(),
+            Some("shooting/video".into()),
+            "image-transfer".into()
+        )
+        .is_none());
+}
+
+#[test]
 fn client_derived_friendly_name_defers_the_init_packet() {
     // #109: the PTP/IP friendly name is the host's OWN device name — client-derived
     // from the `terminalName` slot, identical to the BLE deviceNameString — NOT a

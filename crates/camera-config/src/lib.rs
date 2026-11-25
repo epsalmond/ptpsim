@@ -476,6 +476,7 @@ impl CameraManifest {
             require_valid_simulator_state(self, state, name)?;
         }
         require_disjoint_state_responses(self)?;
+        require_valid_mode_detection(self)?;
         for (code, property) in &self.properties {
             require_valid_property(self, property, code)?;
         }
@@ -841,6 +842,34 @@ fn is_scalar_numeric_property(property: &model::Property) -> bool {
             property.ptype.as_deref(),
             Some("i8" | "u8" | "i16" | "u16" | "i32" | "u32" | "i64" | "u64")
         )
+}
+
+/// A mode's `detectConnections` list must sit beside a `detect` predicate and
+/// name declared connections that can be in the mode (MANIFEST_SCHEMA §11.34).
+/// A connection with an empty `modes` list does not restrict its modes.
+fn require_valid_mode_detection(manifest: &CameraManifest) -> Result<(), ManifestError> {
+    for (path, mode) in &manifest.modes {
+        if mode.detect_connections.is_empty() {
+            continue;
+        }
+        let invalid = |detail: String| {
+            ManifestError::Contract(format!("modes.{path}.detectConnections {detail}"))
+        };
+        if mode.detect.is_none() {
+            return Err(invalid("requires a detect predicate".into()));
+        }
+        for id in &mode.detect_connections {
+            let Some(connection) = manifest.connections.get(id) else {
+                return Err(invalid(format!("names undeclared connection '{id}'")));
+            };
+            if !connection.modes.is_empty() && !connection.modes.contains(path) {
+                return Err(invalid(format!(
+                    "names connection '{id}', whose modes list does not contain '{path}'"
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn require_valid_postview(
@@ -3238,6 +3267,85 @@ properties: { "0xzz": { name: invalid } }
                 .contains("properties map key '0xzz' is not a hex property code"),
             "got: {error}"
         );
+    }
+
+    /// A manifest whose `shooting/video` mode carries `video_fields` and whose
+    /// `app` connection lists `app_modes`.
+    fn mode_detection_manifest(video_fields: &str, app_modes: &str) -> String {
+        format!(
+            r#"
+schema: camera-config/v1
+camera: {{ manufacturer: EXAMPLE, model: MODEL, firmware: "1.0" }}
+connections:
+  app: {{ kind: ptpip, modes: {app_modes} }}
+properties:
+  "0xdf01": {{ name: functionMode, type: u16 }}
+  "0xd246": {{ name: selector, type: u8 }}
+modes:
+  shooting/stills: {{ detect: {{ prop: "0xdf01", eq: 0x16 }} }}
+  shooting/video: {{ {video_fields} }}
+"#
+        )
+    }
+
+    fn mode_detection_error(video_fields: &str, app_modes: &str) -> String {
+        CameraManifest::from_yaml(&mode_detection_manifest(video_fields, app_modes))
+            .unwrap_err()
+            .to_string()
+    }
+
+    #[test]
+    fn detect_connections_requires_a_detect_predicate() {
+        let error = mode_detection_error("detectConnections: [app]", "[]");
+        assert!(
+            error.contains("modes.shooting/video.detectConnections requires a detect predicate"),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn detect_connections_rejects_an_undeclared_connection() {
+        let error = mode_detection_error(
+            r#"detect: { prop: "0xd246", eq: 1 }, detectConnections: [tether]"#,
+            "[]",
+        );
+        assert!(
+            error.contains("names undeclared connection 'tether'"),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn detect_connections_rejects_a_connection_without_the_mode() {
+        let video = r#"detect: { prop: "0xd246", eq: 1 }, detectConnections: [app]"#;
+        let error = mode_detection_error(video, "[shooting/stills]");
+        assert!(
+            error.contains(
+                "names connection 'app', whose modes list does not contain 'shooting/video'"
+            ),
+            "got: {error}"
+        );
+        // A connection with no modes list does not restrict its modes.
+        CameraManifest::from_yaml(&mode_detection_manifest(video, "[]"))
+            .expect("an unrestricted connection accepts the scoped mode");
+    }
+
+    #[test]
+    fn detect_connections_round_trips_through_serde() {
+        let manifest = CameraManifest::from_yaml(&mode_detection_manifest(
+            r#"detect: { prop: "0xd246", eq: 1 }, detectConnections: [app]"#,
+            "[shooting/stills, shooting/video]",
+        ))
+        .unwrap();
+        assert_eq!(manifest.modes["shooting/video"].detect_connections, ["app"]);
+        let yaml = manifest.to_yaml().unwrap();
+        let reloaded = CameraManifest::from_yaml(&yaml).unwrap();
+        assert_eq!(reloaded.modes["shooting/video"].detect_connections, ["app"]);
+        // An unscoped mode serializes without the field.
+        assert!(reloaded.modes["shooting/stills"]
+            .detect_connections
+            .is_empty());
+        assert_eq!(yaml.matches("detectConnections").count(), 1, "{yaml}");
     }
 
     #[test]

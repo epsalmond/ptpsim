@@ -3033,3 +3033,243 @@ async fn import_over_tcp_succeeds_without_the_startup_state() {
         .expect("import succeeds with a card in slot 1");
     loopback.finish().await;
 }
+
+const APP_VIDEO_SELECTOR_BUNDLE: &str =
+    "fuji/gfx100ii/evidence/app-video-selector/2026-05-18-app-video-selector-ops.jsonl";
+
+/// Turn the captured app video-selector transactions into manifest steps. The
+/// `0xD246` writes are left out because the manifest's selector mode entries
+/// send them. A parameter equal to an earlier replayed transaction's captured
+/// id is bound to that transaction's runtime id, the way the capture's
+/// `0x9021` carries the `0x9020` transaction id.
+fn replay_steps_from_bundle() -> (Vec<serde_yaml::Value>, usize) {
+    let bundle = data(APP_VIDEO_SELECTOR_BUNDLE);
+    let validated = validate_bundles(&[&bundle]).expect("app video-selector bundle validates");
+    let transactions: Vec<_> = validated
+        .records
+        .iter()
+        .filter_map(|record| match record {
+            ObservationLine::PtpTransaction(transaction)
+                if transaction.request.operation != "0x1016" =>
+            {
+                Some(transaction.as_ref())
+            }
+            _ => None,
+        })
+        .collect();
+    let mut steps: Vec<serde_yaml::Value> = Vec::new();
+    for (index, transaction) in transactions.iter().enumerate() {
+        let response = transaction.response.as_ref().expect("captured response");
+        assert_eq!(response.code, "0x2001");
+        assert!(response.data.is_none(), "the captured reply has no data");
+        let params: Vec<serde_yaml::Value> = transaction
+            .request
+            .parameters
+            .iter()
+            .map(|param| {
+                match transactions[..index]
+                    .iter()
+                    .find(|earlier| earlier.transaction_id == *param)
+                {
+                    Some(earlier) => serde_yaml::from_str(&format!(
+                        "{{ runtime: tx{} }}",
+                        earlier.transaction_id
+                    ))
+                    .unwrap(),
+                    None => serde_yaml::Value::from(*param),
+                }
+            })
+            .collect();
+        let mut step = serde_yaml::Mapping::new();
+        step.insert(
+            "sendOp".into(),
+            transaction.request.operation.clone().into(),
+        );
+        step.insert("params".into(), params.into());
+        let referenced = transactions[index + 1..].iter().any(|later| {
+            later
+                .request
+                .parameters
+                .contains(&transaction.transaction_id)
+        });
+        if referenced {
+            step.insert(
+                "captures".into(),
+                serde_yaml::from_str(&format!(
+                    "[{{ bind: tx{}, as: transactionId }}]",
+                    transaction.transaction_id
+                ))
+                .unwrap(),
+            );
+        }
+        steps.push(step.into());
+    }
+    let count = steps.len();
+    (steps, count)
+}
+
+/// #570: over real TCP on the shipped consolidated manifest, the app video
+/// selector moves the simulator into `shooting/video` with live view intact.
+/// The captured `0x9020`/`0x9021` pair replays with bare OK replies, a
+/// stills-only operation is refused in video, and stills works again after
+/// the selector returns. The `0x9027` refusal is the wire-visible
+/// discriminator: before #570 the simulator stayed in stills and accepted it.
+#[tokio::test]
+async fn app_video_selector_replays_the_captured_pair_over_tcp() {
+    let body = data(GFX_CONSOLIDATED);
+    let media = temp_media_root();
+    let live_view = media.path().join("video-liveview");
+    std::fs::create_dir_all(&live_view).expect("create live-view fixture directory");
+    std::fs::write(
+        live_view.join("frame.jpg"),
+        b"\xFF\xD8\xFF\xE0LOOPBACK\xFF\xD9",
+    )
+    .expect("write live-view fixture");
+    let loopback = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+    let server = Server::bind(Config {
+        instance_id: "app-video-selector-loopback".into(),
+        profile: "fuji/gfx100ii".into(),
+        connection: "app".into(),
+        manifest_yaml: body.clone(),
+        media_root: media.path().to_path_buf(),
+        command_bind: Some(loopback),
+        liveview_bind: Some(loopback),
+        event_bind: Some(loopback),
+        knock_bind: None,
+        pcss_init_fails: 0,
+        pcss_shutter_enqueue_count: 0,
+        control_bind: loopback,
+        liveview_dir: Some(live_view),
+        state_callback: None,
+    })
+    .await
+    .expect("bind simulator service");
+
+    // Client-side test actions only; the simulator runs the shipped manifest.
+    // `keepalive` is unused on the app connection, so it carries the replay.
+    // `autofocusRelease` is re-scoped to video so the client sends the
+    // stills-only 0x9027 while the simulator is in video.
+    let command = server.command_addr();
+    let event = server.event_addr_opt().expect("app event listener");
+    let live_view = server.liveview_addr_opt().expect("app live-view listener");
+    let body = with_loopback_ports(body, command, event, live_view);
+    let mut client: serde_yaml::Value = serde_yaml::from_str(&body).expect("parse manifest");
+    let (replay_steps, replay_count) = replay_steps_from_bundle();
+    let actions = &mut client["connections"]["app"]["actions"];
+    assert!(actions.get("keepalive").is_none());
+    let mut initiator = serde_yaml::Mapping::new();
+    initiator.insert("steps".into(), replay_steps.into());
+    let mut replay = serde_yaml::Mapping::new();
+    replay.insert("mode".into(), "shooting/video".into());
+    replay.insert("initiator".into(), initiator.into());
+    actions["keepalive"] = replay.into();
+    actions["autofocusRelease"]["mode"] = "shooting/video".into();
+    let client = serde_yaml::to_string(&client).expect("serialize client manifest");
+    let store = ConfigStore::from_tiers(client, Some(data("fuji/fuji.yaml")), Vec::new())
+        .expect("load client manifest tiers");
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let server_task = tokio::spawn(server.run(shutdown_rx));
+    let transport = NativePtpTransport::new(
+        Arc::clone(&store),
+        TransportConfig {
+            camera: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            interface: None,
+            connection: "app".into(),
+            runtime_scope: vec![("terminalName".into(), "ptpsim".into())],
+            connect_timeout: Duration::from_secs(2),
+            max_frame_bytes: 1024 * 1024,
+        },
+        Arc::new(TraceWriter::new(TraceFormat::Jsonl, Box::new(io::sink()))),
+    )
+    .expect("construct native transport");
+    let opened = transport
+        .open_command_session_after_handoff(Instant::now() + Duration::from_secs(2))
+        .await
+        .expect("open the PTP session over TCP");
+    assert_eq!(opened.response_code, 0x2001);
+
+    let entry = |from: Option<&str>, to: &str| {
+        let raw_transport: Arc<dyn PtpExecutorTransport> = transport.clone();
+        run_mode_entry(
+            Arc::clone(&store),
+            "app".into(),
+            from.map(str::to_string),
+            to.into(),
+            raw_transport,
+            Arc::new(NoopObserver),
+            Arc::new(NoopObserver),
+            Vec::new(),
+        )
+    };
+    let action = |action_id: &str, mode: &str| {
+        let raw_transport: Arc<dyn PtpExecutorTransport> = transport.clone();
+        run_initiator_action(
+            Arc::clone(&store),
+            ActionInvocationRequest {
+                catalog_revision: store.action_catalog().revision,
+                action_id: action_id.into(),
+                connection: "app".into(),
+                mode: mode.into(),
+                role: ActionRole::Initiator,
+                parameters: Vec::new(),
+            },
+            raw_transport,
+            Arc::new(NoopObserver),
+            Arc::new(NoopObserver),
+        )
+    };
+
+    entry(None, "shooting/stills")
+        .await
+        .expect("cold live-view entry");
+    assert!(
+        transport
+            .confirm_live_view_frame()
+            .await
+            .expect("stills frame")
+            > 0
+    );
+    entry(Some("shooting/stills"), "shooting/video")
+        .await
+        .expect("D246=1 selector entry");
+
+    let replayed = action("keepalive", "shooting/video")
+        .await
+        .expect("the captured 0x9020/0x9021 pair replays with OK replies");
+    assert_eq!(replayed.steps_run as usize, replay_count);
+    assert!(replayed
+        .outputs
+        .iter()
+        .all(|output| output.payload.is_empty()));
+    assert!(replayed.scope.iter().any(|value| value.key == "tx58"));
+
+    let refused = action("autofocusRelease", "shooting/video")
+        .await
+        .expect_err("app video refuses the stills-only 0x9027");
+    let camera_protocol_ffi::PtpExecutorError::StepFailed { detail, .. } = &refused else {
+        panic!("expected StepFailed, got {refused:?}");
+    };
+    assert_eq!(detail, "operation 0x9027 returned 0x2005");
+
+    entry(Some("shooting/video"), "shooting/stills")
+        .await
+        .expect("D246=0 selector entry");
+    action("shutter", "shooting/stills")
+        .await
+        .expect("the postview shutter works in stills with streaming intact");
+    assert!(
+        transport
+            .confirm_live_view_frame()
+            .await
+            .expect("stills frame again")
+            > 0
+    );
+
+    transport
+        .close_session_if_open()
+        .await
+        .expect("close PTP session cleanly");
+    let _ = shutdown_tx.send(());
+    server_task.await.expect("join simulator service");
+}
