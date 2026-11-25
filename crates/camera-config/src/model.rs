@@ -2210,6 +2210,95 @@ pub struct ActionInitiator {
     pub steps: Vec<Step>,
     #[serde(default)]
     pub activities: Vec<ConnectionActivityDescriptor>,
+    /// Rules that classify the PTP response failure that ends this action
+    /// (MANIFEST_SCHEMA §11.33). They change only how that failure is
+    /// reported, never retry, tolerance, or fallback behavior.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failure_conditions: Vec<FailureConditionRule>,
+}
+
+impl ActionInitiator {
+    /// The rule that classifies a final failure of `operation` with
+    /// `response`, if any. The loader rejects overlapping rules, so at most
+    /// one matches.
+    pub fn failure_condition(
+        &self,
+        operation: u16,
+        response: u16,
+    ) -> Option<&FailureConditionRule> {
+        self.failure_conditions
+            .iter()
+            .find(|rule| rule.matches(operation, response))
+    }
+}
+
+/// One `failureConditions` entry: when the failure that ends the action is
+/// `operation` answering one of `when_response_codes`, report it as
+/// `condition` with `context`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FailureConditionRule {
+    pub operation: HexCode,
+    #[serde(default)]
+    pub when_response_codes: Vec<HexCode>,
+    pub condition: FailureCondition,
+    /// Exactly the keys `condition` requires, with string values.
+    #[serde(default)]
+    pub context: BTreeMap<String, String>,
+    #[serde(default)]
+    pub evidence: Vec<String>,
+}
+
+impl FailureConditionRule {
+    /// Whether a failure of `operation` with `response` matches this rule.
+    pub fn matches(&self, operation: u16, response: u16) -> bool {
+        parse_hex_code(&self.operation) == Some(operation)
+            && self
+                .when_response_codes
+                .iter()
+                .any(|code| parse_hex_code(code) == Some(response))
+    }
+}
+
+/// The closed vocabulary of action failure conditions (MANIFEST_SCHEMA
+/// §11.33). The consumer receives the name as the `condition` context value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FailureCondition {
+    /// The camera refused the operation in a way the evidence links to the
+    /// card in one memory card slot. The slot may be empty, or its card may
+    /// not have been ready, so consumer copy should stay cautious.
+    MediaSlotUnavailable,
+}
+
+impl FailureCondition {
+    /// The name the manifest and the consumer use for this condition.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::MediaSlotUnavailable => "mediaSlotUnavailable",
+        }
+    }
+
+    /// The context keys a rule for this condition must declare, and no others.
+    pub fn required_context(self) -> &'static [&'static str] {
+        match self {
+            Self::MediaSlotUnavailable => &["slot"],
+        }
+    }
+
+    /// Whether `value` is well formed for context key `key`. Only called for
+    /// keys in [`Self::required_context`].
+    pub fn context_value_is_valid(self, key: &str, value: &str) -> bool {
+        match (self, key) {
+            // A 1-based slot number: decimal digits, no sign, no leading zero.
+            (Self::MediaSlotUnavailable, "slot") => {
+                !value.is_empty()
+                    && !value.starts_with('0')
+                    && value.bytes().all(|byte| byte.is_ascii_digit())
+            }
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

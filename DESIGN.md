@@ -1074,7 +1074,9 @@ empty memory card slot, and it changes only the responses the manifest lists
 for it. It survives session close, reconnection, and transport loss until an
 overlay leaves it. An undeclared state name rejects the whole overlay and the
 error lists the declared names. `GET /state` and state callbacks list the
-active names under `states`. The fixture
+active names under `states`. A consumer app never sees the state itself. It
+sees the failure the state causes, classified by the action's failure conditions
+(`docs/MANIFEST_SCHEMA.md` §11.33). The fixture
 `packages/fixtures/startup-state/gfx100ii-memory-card-slot1-empty.yaml` starts
 a GFX100 II with memory card slot 1 empty:
 

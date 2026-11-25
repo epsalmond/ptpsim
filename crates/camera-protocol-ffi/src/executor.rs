@@ -235,7 +235,9 @@ pub trait StepObserver: Send + Sync {
 pub enum ExecutorStepFailureKind {
     /// An executor-owned wall-clock budget or transport timeout elapsed.
     DeadlineExceeded,
-    /// A manifest-declared terminal condition matched an observation.
+    /// A manifest-declared terminal condition matched an observation, or a
+    /// PTP action's declared failure condition classified the failure that
+    /// ended the action (MANIFEST_SCHEMA §11.33).
     ConditionRejected,
     /// Any non-timeout transport, validation, transform, or plan-step failure.
     Other,

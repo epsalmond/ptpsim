@@ -3910,3 +3910,52 @@ fn connection_wire_framing_is_declared_in_the_manifest() {
     assert!(matches!(wt.command_framing, Some(PtpFraming::Compressed)));
     assert!(wt.event_framing.is_none());
 }
+
+#[test]
+fn failure_conditions_load_through_the_ffi_store_without_an_ffi_type() {
+    // MANIFEST_SCHEMA §11.33: the executor reads the rules from the loaded
+    // manifest, so the action record keeps its shape and no FFI type carries
+    // them. Both shipped GFX100 II manifests declare the empty slot rule on
+    // the two actions that run the image-import prime retry.
+    for yaml in [
+        data("fuji/gfx100ii/gfx100ii.yaml"),
+        data("fuji/gfx100ii/gfx100ii.consolidated.yaml"),
+    ] {
+        let manifest = camera_config::CameraManifest::from_yaml(&yaml).expect("manifest loads");
+        for verb in [
+            camera_config::ActionVerb::EnumerateObjects,
+            camera_config::ActionVerb::ImportObjects,
+        ] {
+            let initiator = manifest
+                .action("app", verb)
+                .and_then(|action| action.initiator.as_ref())
+                .unwrap_or_else(|| panic!("app {verb:?} initiator"));
+            let rule = initiator
+                .failure_condition(0x9050, 0x2019)
+                .unwrap_or_else(|| panic!("{verb:?} empty slot rule"));
+            assert_eq!(rule.condition.name(), "mediaSlotUnavailable");
+            assert_eq!(rule.context.get("slot").map(String::as_str), Some("1"));
+            assert_eq!(initiator.failure_conditions.len(), 1);
+        }
+    }
+    for store in [store(), consolidated_store()] {
+        let action = store
+            .action("app".into(), ActionVerb::EnumerateObjects)
+            .expect("app.actions.enumerateObjects");
+        assert_eq!(action.initiator.expect("initiator").steps.len(), 3);
+    }
+}
+
+#[test]
+fn malformed_failure_condition_is_a_load_error_at_the_ffi_boundary() {
+    let original = data("fuji/gfx100ii/gfx100ii.yaml");
+    let body = original.replacen("context: { slot: \"1\" }", "context: { slot: \"0\" }", 1);
+    assert_ne!(body, original, "failure condition anchor missing");
+    let Err(error) = ConfigStore::from_bundle(body, Some(data("fuji/fuji.yaml"))) else {
+        panic!("malformed slot rejects the bundle");
+    };
+    assert!(
+        error.to_string().contains("failureConditions[0]"),
+        "{error}"
+    );
+}

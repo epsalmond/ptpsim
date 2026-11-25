@@ -61,26 +61,26 @@ pub use model::{
     CameraInitiatedTrigger, CameraManifest, CaptureSource, CloseSession, ComputedValue, Connection,
     ConnectionDiscovery, ConnectionTransition, Control, ControlOwner, ControlReadSource,
     ControlRole, ControlSurfaceEntry, Descriptor, DescriptorValue, EmitParam, EventDelivery,
-    EventDeliveryContract, GateFailure, GateRequirement, InitIdentity, InitRetries, InitShape,
-    LiveViewDelivery, LiveViewDeliveryKind, LiveViewPeriodicPause, LiveViewSimulationTiming,
-    LiveViewStream, Loop, ManufacturerDefaults, Media, MediaFormat, MissingRuntimeValue, Mode,
-    ModeEntry, ModeEntryExecution, ObjectTransferCompletionPolicy, ObjectTransferCompletionTiming,
-    ObjectTransferContract, ObjectTransferFormatSupport, ObjectTransferResumePolicy,
-    ObjectTransferStrategy, ObjectsAvailable, ObservedScope, OpEffect, Operation,
-    OperationDisposition, OperationDispositionKind, OperationEmit, OperationHandler, OperationKind,
-    Payload, PayloadForm, PcssDiscoveryTarget, PcssDiscoveryTargets, PcssKnock, PostviewEvent,
-    Property, PropertyAccess, PropertyDisposition, PropertyDispositionKind, PropertyKind,
-    PropertySemanticAssertions, PropertyTransitionTerminal, PropertyValueDecoder,
-    PropertyValueEncoding, PropertyValueProfile, PropertyValueProfileRow, PropertyValueRow,
-    ProvenancedName, ProvenancedPropertyValueProfile, ProvenancedPropertyValueRow, RecordLayout,
-    RecordMember, RecordMemberDetail, RecordMemberRef, RecordValueEncoding, RecordValueLiteral,
-    ReestablishConnection, ResponderMutation, RetryFailureClass, RuntimeSetPropValue,
-    SemanticAssertionLedger, SentinelFrame, SentinelMask, SequenceGate, SessionContract,
-    SessionOwnership, SetPropValue, ShutterRecipe, SimulatorState, SocketAvailability,
-    SocketBinding, SocketBindingDescriptor, SocketBindings, SocketRole, StateResponse, Step,
-    StepParam, StepRetry, StructuredTextField, StructuredTextLayout, StructuredTextScalar,
-    TransferCompletion, TransportClose, TriggerMatch, ValuePolicy, ValueSource, VersionCond,
-    WireFraming, Workflow, WorkflowPhase,
+    EventDeliveryContract, FailureCondition, FailureConditionRule, GateFailure, GateRequirement,
+    InitIdentity, InitRetries, InitShape, LiveViewDelivery, LiveViewDeliveryKind,
+    LiveViewPeriodicPause, LiveViewSimulationTiming, LiveViewStream, Loop, ManufacturerDefaults,
+    Media, MediaFormat, MissingRuntimeValue, Mode, ModeEntry, ModeEntryExecution,
+    ObjectTransferCompletionPolicy, ObjectTransferCompletionTiming, ObjectTransferContract,
+    ObjectTransferFormatSupport, ObjectTransferResumePolicy, ObjectTransferStrategy,
+    ObjectsAvailable, ObservedScope, OpEffect, Operation, OperationDisposition,
+    OperationDispositionKind, OperationEmit, OperationHandler, OperationKind, Payload, PayloadForm,
+    PcssDiscoveryTarget, PcssDiscoveryTargets, PcssKnock, PostviewEvent, Property, PropertyAccess,
+    PropertyDisposition, PropertyDispositionKind, PropertyKind, PropertySemanticAssertions,
+    PropertyTransitionTerminal, PropertyValueDecoder, PropertyValueEncoding, PropertyValueProfile,
+    PropertyValueProfileRow, PropertyValueRow, ProvenancedName, ProvenancedPropertyValueProfile,
+    ProvenancedPropertyValueRow, RecordLayout, RecordMember, RecordMemberDetail, RecordMemberRef,
+    RecordValueEncoding, RecordValueLiteral, ReestablishConnection, ResponderMutation,
+    RetryFailureClass, RuntimeSetPropValue, SemanticAssertionLedger, SentinelFrame, SentinelMask,
+    SequenceGate, SessionContract, SessionOwnership, SetPropValue, ShutterRecipe, SimulatorState,
+    SocketAvailability, SocketBinding, SocketBindingDescriptor, SocketBindings, SocketRole,
+    StateResponse, Step, StepParam, StepRetry, StructuredTextField, StructuredTextLayout,
+    StructuredTextScalar, TransferCompletion, TransportClose, TriggerMatch, ValuePolicy,
+    ValueSource, VersionCond, WireFraming, Workflow, WorkflowPhase,
 };
 pub use observation::*;
 pub use predicate::{Leaf, Predicate, PropView};
@@ -384,6 +384,13 @@ impl CameraManifest {
                         &defined_gates,
                         &mut lints,
                     );
+                    for (index, rule) in initiator.failure_conditions.iter().enumerate() {
+                        check(
+                            &rule.evidence,
+                            &format!("connection {id} action {verb:?} failureConditions[{index}]"),
+                            &mut lints,
+                        );
+                    }
                 }
             }
         }
@@ -634,6 +641,10 @@ impl CameraManifest {
                             &format!("{path}.initiator.activities"),
                         )?;
                     }
+                    require_valid_failure_conditions(
+                        initiator,
+                        &format!("{path}.initiator.failureConditions"),
+                    )?;
                 }
             }
         }
@@ -1913,6 +1924,128 @@ fn numeric_scalar_bounds(ptype: Option<&str>) -> Option<(i128, i128)> {
 fn property_scalar_fits(property: &Property, value: i64) -> bool {
     numeric_scalar_bounds(property.ptype.as_deref())
         .is_some_and(|(min, max)| i128::from(value) >= min && i128::from(value) <= max)
+}
+
+/// Each failure condition must name an operation a `sendOp` step of this
+/// initiator sends, list valid non-OK responses, declare exactly the context
+/// its condition requires, and cite evidence. Two rules may not match the same
+/// failure (MANIFEST_SCHEMA §11.33).
+fn require_valid_failure_conditions(
+    initiator: &ActionInitiator,
+    path: &str,
+) -> Result<(), ManifestError> {
+    let contract = |detail: String| Err(ManifestError::Contract(detail));
+    let mut claimed: Vec<(u16, u16, usize)> = Vec::new();
+    for (index, rule) in initiator.failure_conditions.iter().enumerate() {
+        let path = format!("{path}[{index}]");
+        let Some(operation) = parse_hex_code(&rule.operation) else {
+            return contract(format!(
+                "{path} operation '{}' is not a hex operation code",
+                rule.operation
+            ));
+        };
+        if !steps_send_operation(&initiator.steps, operation) {
+            return contract(format!(
+                "{path} operation '{}' is not sent by any sendOp step of this initiator",
+                rule.operation
+            ));
+        }
+        if rule.when_response_codes.is_empty() {
+            return contract(format!("{path} whenResponseCodes must not be empty"));
+        }
+        let mut codes = std::collections::BTreeSet::new();
+        for text in &rule.when_response_codes {
+            let Some(code) = parse_hex_code(text) else {
+                return contract(format!(
+                    "{path} response '{text}' is not a hex response code"
+                ));
+            };
+            if !ptp_core::codes::resp::is_response_code(code) {
+                return contract(format!(
+                    "{path} response '{text}' is not a PTP response code"
+                ));
+            }
+            if code == ptp_core::codes::resp::OK {
+                return contract(format!(
+                    "{path} whenResponseCodes must not contain 0x2001 (OK)"
+                ));
+            }
+            if !codes.insert(code) {
+                return contract(format!("{path} whenResponseCodes repeats '{text}'"));
+            }
+        }
+        let condition = rule.condition;
+        let required = condition.required_context();
+        for key in required {
+            if !rule.context.contains_key(*key) {
+                return contract(format!(
+                    "{path} condition {} requires context key '{key}'",
+                    condition.name()
+                ));
+            }
+        }
+        for (key, value) in &rule.context {
+            if !required.contains(&key.as_str()) {
+                return contract(format!(
+                    "{path} context key '{key}' is not used by condition {}",
+                    condition.name()
+                ));
+            }
+            if !condition.context_value_is_valid(key, value) {
+                return contract(format!(
+                    "{path} context '{key}' value '{value}' is malformed for condition {}",
+                    condition.name()
+                ));
+            }
+        }
+        if rule.evidence.is_empty() {
+            return contract(format!("{path} evidence must not be empty"));
+        }
+        for code in codes {
+            if let Some((_, _, earlier)) = claimed
+                .iter()
+                .find(|(op, response, _)| *op == operation && *response == code)
+            {
+                return contract(format!(
+                    "{path} overlaps failureConditions[{earlier}]: both match operation '{}' answering 0x{code:04x}",
+                    rule.operation
+                ));
+            }
+            claimed.push((operation, code, index));
+        }
+    }
+    Ok(())
+}
+
+/// Whether any `sendOp` step in `steps`, including nested control flow, sends
+/// `operation`.
+fn steps_send_operation(steps: &[Step], operation: u16) -> bool {
+    steps.iter().any(|step| {
+        step.send_op.as_deref().and_then(parse_hex_code) == Some(operation)
+            || step
+                .await_until
+                .as_ref()
+                .is_some_and(|await_until| steps_send_operation(&await_until.on_each, operation))
+            || step.retry.as_ref().is_some_and(|retry| {
+                steps_send_operation(&retry.steps, operation)
+                    || retry
+                        .fallback
+                        .as_ref()
+                        .is_some_and(|fallback| steps_send_operation(fallback, operation))
+            })
+            || step
+                .r#loop
+                .as_ref()
+                .is_some_and(|loop_step| match loop_step {
+                    Loop::ForEach { body, .. } | Loop::Chunk { body, .. } => {
+                        steps_send_operation(body, operation)
+                    }
+                })
+            || step.if_step.as_ref().is_some_and(|condition| {
+                steps_send_operation(&condition.then_steps, operation)
+                    || steps_send_operation(&condition.else_steps, operation)
+            })
+    })
 }
 
 fn require_valid_action_runtime_values(

@@ -2783,3 +2783,253 @@ async fn capability_verification_retains_native_observations_without_promoting_r
     let _ = shutdown_tx.send(());
     server_task.await.unwrap();
 }
+
+// --- Empty memory card slot 1 over a real socket (MANIFEST_SCHEMA §11.32, §11.33, #352) ---
+//
+// The shipped GFX100 II startup-state fixture puts the simulator in its
+// `memoryCardSlot1Empty` state. The state answers 0x9050 with 0x2019 only in
+// the detected `image-transfer` mode, and a new PTP session starts with no
+// detected mode. A client therefore opens one session, runs the manifest's
+// cold `image-transfer` mode entry, which writes the 0xdf01 mode selector,
+// and then runs the action in that same session.
+
+const GFX_CONSOLIDATED: &str = "fuji/gfx100ii/gfx100ii.consolidated.yaml";
+const EMPTY_SLOT_FIXTURE: &str =
+    "packages/fixtures/startup-state/gfx100ii-memory-card-slot1-empty.yaml";
+
+/// A running GFX100 II simulator service on loopback, plus a client that has
+/// opened a PTP session over the real TCP command socket and entered
+/// `image-transfer` through the manifest's mode entry.
+struct ImageTransferLoopback {
+    store: Arc<ConfigStore>,
+    transport: Arc<NativePtpTransport>,
+    shutdown: tokio::sync::oneshot::Sender<()>,
+    server_task: tokio::task::JoinHandle<()>,
+    _media: tempfile::TempDir,
+}
+
+impl ImageTransferLoopback {
+    /// Start the service with the shipped consolidated manifest on
+    /// OS-assigned loopback ports. With `slot_one_empty`, apply the shipped
+    /// startup-state fixture first, the way `--startup-state` does.
+    async fn start(slot_one_empty: bool) -> Self {
+        let body = data(GFX_CONSOLIDATED);
+        let media = temp_media_root();
+        let folder = media.path().join("DCIM/100_FUJI");
+        std::fs::create_dir_all(&folder).expect("create card folder");
+        std::fs::write(
+            folder.join("DSCF0001.JPG"),
+            b"\xFF\xD8\xFF\xE0LOOPBACK\xFF\xD9",
+        )
+        .expect("write card image");
+        let loopback = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+        let server = Server::bind(Config {
+            instance_id: "empty-slot-loopback".into(),
+            // The fixture names this profile and connection, and the service
+            // rejects a fixture whose profile or connection differs.
+            profile: "fuji/gfx100ii".into(),
+            connection: "app".into(),
+            manifest_yaml: body.clone(),
+            media_root: media.path().to_path_buf(),
+            command_bind: Some(loopback),
+            liveview_bind: Some(loopback),
+            event_bind: Some(loopback),
+            knock_bind: None,
+            pcss_init_fails: 0,
+            pcss_shutter_enqueue_count: 0,
+            control_bind: loopback,
+            liveview_dir: None,
+            state_callback: None,
+        })
+        .await
+        .expect("bind simulator service");
+        if slot_one_empty {
+            let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .join(EMPTY_SLOT_FIXTURE);
+            let raw = std::fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+            let overlay: camera_sim::StateOverlay =
+                serde_yaml::from_str(&raw).expect("parse shipped startup-state fixture");
+            let applied = server
+                .apply_startup_state(&overlay)
+                .await
+                .expect("apply shipped startup-state fixture");
+            assert_eq!(applied.states, 1);
+        }
+
+        // The client reads its ports from the manifest, so point the manifest
+        // at the listeners the OS assigned.
+        let command = server.command_addr();
+        let event = server.event_addr_opt().expect("app event listener");
+        let live_view = server.liveview_addr_opt().expect("app live-view listener");
+        let body = with_loopback_ports(body, command, event, live_view);
+        let store = ConfigStore::from_tiers(body, Some(data("fuji/fuji.yaml")), Vec::new())
+            .expect("load GFX100 II manifest tiers");
+
+        // The listeners are already bound, so the client can connect as soon
+        // as the service task starts accepting.
+        let (shutdown, shutdown_rx) = tokio::sync::oneshot::channel();
+        let server_task = tokio::spawn(server.run(shutdown_rx));
+        let transport = NativePtpTransport::new(
+            Arc::clone(&store),
+            TransportConfig {
+                camera: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+                interface: None,
+                connection: "app".into(),
+                runtime_scope: vec![("terminalName".into(), "LoopbackTest".into())],
+                connect_timeout: Duration::from_secs(2),
+                max_frame_bytes: 1024 * 1024,
+            },
+            Arc::new(TraceWriter::new(TraceFormat::Jsonl, Box::new(io::sink()))),
+        )
+        .expect("construct native transport");
+        let opened = transport
+            .open_command_session()
+            .await
+            .expect("initialize PTP/IP and open the session over TCP");
+        assert_eq!(opened.response_code, 0x2001);
+
+        let raw_transport: Arc<dyn PtpExecutorTransport> = transport.clone();
+        run_mode_entry(
+            Arc::clone(&store),
+            "app".into(),
+            None,
+            "image-transfer".into(),
+            raw_transport,
+            Arc::new(NoopObserver),
+            Arc::new(NoopObserver),
+            Vec::new(),
+        )
+        .await
+        .expect("cold image-transfer entry succeeds in either card state");
+
+        Self {
+            store,
+            transport,
+            shutdown,
+            server_task,
+            _media: media,
+        }
+    }
+
+    /// Run an `image-transfer` action in the session opened by `start`.
+    async fn run(
+        &self,
+        action_id: &str,
+    ) -> Result<camera_protocol_ffi::PtpExecutionOutcome, camera_protocol_ffi::PtpExecutorError>
+    {
+        let raw_transport: Arc<dyn PtpExecutorTransport> = self.transport.clone();
+        run_initiator_action(
+            Arc::clone(&self.store),
+            ActionInvocationRequest {
+                catalog_revision: self.store.action_catalog().revision,
+                action_id: action_id.into(),
+                connection: "app".into(),
+                mode: "image-transfer".into(),
+                role: ActionRole::Initiator,
+                parameters: Vec::new(),
+            },
+            raw_transport,
+            Arc::new(NoopObserver),
+            Arc::new(NoopObserver),
+        )
+        .await
+    }
+
+    /// Close the PTP session, then stop the service.
+    async fn finish(self) {
+        self.transport
+            .close_session_if_open()
+            .await
+            .expect("close PTP session cleanly");
+        let _ = self.shutdown.send(());
+        self.server_task.await.expect("join simulator service");
+    }
+}
+
+/// Assert `error` is the classified empty-slot failure of the 0x9050 sent at
+/// `expected_step`.
+fn assert_media_slot_unavailable(
+    error: &camera_protocol_ffi::PtpExecutorError,
+    expected_step: &str,
+) {
+    let camera_protocol_ffi::PtpExecutorError::StepFailed {
+        step,
+        kind,
+        detail,
+        context,
+    } = error
+    else {
+        panic!("expected StepFailed, got {error:?}");
+    };
+    assert_eq!(
+        *kind,
+        camera_protocol_ffi::ExecutorStepFailureKind::ConditionRejected,
+        "{error:?}"
+    );
+    assert_eq!(step, expected_step);
+    assert_eq!(detail, "operation 0x9050 returned 0x2019");
+    let pairs: Vec<(&str, &str)> = context
+        .iter()
+        .map(|entry| (entry.key.as_str(), entry.value.as_str()))
+        .collect();
+    let [operation, response, (transaction_key, transaction_id), condition, slot] =
+        pairs.as_slice()
+    else {
+        panic!("expected five context entries, got {pairs:?}");
+    };
+    assert_eq!(*operation, ("operation", "0x9050"));
+    assert_eq!(*response, ("response", "0x2019"));
+    assert_eq!(*transaction_key, "transactionId");
+    assert!(transaction_id.parse::<u32>().is_ok(), "{pairs:?}");
+    assert_eq!(*condition, ("condition", "mediaSlotUnavailable"));
+    assert_eq!(*slot, ("slot", "1"));
+}
+
+#[tokio::test]
+async fn empty_slot_one_classifies_enumeration_over_tcp() {
+    let loopback = ImageTransferLoopback::start(true).await;
+    let error = loopback
+        .run("enumerateObjects")
+        .await
+        .expect_err("the camera refuses every page selection with slot 1 empty");
+    assert_media_slot_unavailable(&error, "steps[0].retry.steps[0].sendOp");
+    loopback.finish().await;
+}
+
+#[tokio::test]
+async fn enumeration_over_tcp_succeeds_without_the_startup_state() {
+    let loopback = ImageTransferLoopback::start(false).await;
+    let outcome = loopback
+        .run("enumerateObjects")
+        .await
+        .expect("enumeration succeeds with a card in slot 1");
+    assert!(outcome
+        .collections
+        .iter()
+        .any(|collection| collection.key == "objectHandles"));
+    loopback.finish().await;
+}
+
+#[tokio::test]
+async fn empty_slot_one_classifies_import_over_tcp() {
+    let loopback = ImageTransferLoopback::start(true).await;
+    let error = loopback
+        .run("importObjects")
+        .await
+        .expect_err("the camera refuses every page selection with slot 1 empty");
+    // importObjects repeats the nine mode-entry steps before its prime retry.
+    assert_media_slot_unavailable(&error, "steps[9].retry.steps[0].sendOp");
+    loopback.finish().await;
+}
+
+#[tokio::test]
+async fn import_over_tcp_succeeds_without_the_startup_state() {
+    let loopback = ImageTransferLoopback::start(false).await;
+    loopback
+        .run("importObjects")
+        .await
+        .expect("import succeeds with a card in slot 1");
+    loopback.finish().await;
+}

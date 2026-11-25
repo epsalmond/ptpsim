@@ -17311,6 +17311,15 @@ connections:
               maxAttempts: 3
               retryDelayMs: 1000
           activities: []
+          failureConditions:
+          - operation: '0x9050'
+            whenResponseCodes:
+            - '0x2019'
+            condition: mediaSlotUnavailable
+            context:
+              slot: '1'
+            evidence:
+            - fieldImageImportSlot1Empty20260718
         triggers: []
         evidence:
         - docImageTransfer
@@ -17822,6 +17831,15 @@ connections:
                         repeat: 1
                         awaitUntil: null
           activities: []
+          failureConditions:
+          - operation: '0x9050'
+            whenResponseCodes:
+            - '0x2019'
+            condition: mediaSlotUnavailable
+            context:
+              slot: '1'
+            evidence:
+            - fieldImageImportSlot1Empty20260718
         triggers: []
         evidence:
         - docImageTransfer

@@ -347,6 +347,17 @@ connections:
                 steps:
                   - getProp: "0xd621"
                     captures: [{ bind: objectHandles, as: ptpU32Array }]
+          # Curated from the reduced evidence (MANIFEST_SCHEMA 11.33). With slot 1
+          # empty, 0x9050 answered 0x2019 on every attempt. The same code was also
+          # seen briefly with a card present. The rule reports the failure left
+          # after the short prime retry above, which does not reliably separate
+          # those cases, so the condition is a cautious hint, not proof.
+          failureConditions:
+            - operation: "0x9050"
+              whenResponseCodes: ["0x2019"]
+              condition: mediaSlotUnavailable
+              context: { slot: "1" }
+              evidence: [fieldImageImportSlot1Empty20260718]
         evidence: [docImageTransfer]
       # Per-handle metadata + thumbnail — same wire shape as PCSS, different
       # surface (reference-app goes through the image-transfer mode-entry first).
@@ -450,6 +461,15 @@ connections:
                                 - { runtime: offset, mask: 0xffffffff }
                                 - { runtime: length }
                                 - { runtime: offset, shift: 32 }
+          # Same rule as enumerateObjects (MANIFEST_SCHEMA 11.33): this action runs
+          # the same prime retry, so an empty slot 1 ends it with the same 0x9050
+          # 0x2019 failure. The condition is a cautious hint, not proof.
+          failureConditions:
+            - operation: "0x9050"
+              whenResponseCodes: ["0x2019"]
+              condition: mediaSlotUnavailable
+              context: { slot: "1" }
+              evidence: [fieldImageImportSlot1Empty20260718]
         triggers: []
         evidence: [docImageTransfer, docLargeMovObjectInfo]
 

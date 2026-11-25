@@ -401,8 +401,11 @@ through `PATCH /state`.
 The overlay's `states` field enters or leaves a manifest-declared simulator state
 (`MANIFEST_SCHEMA.md` §11.32), such as the GFX100 II's empty memory card slot 1. A
 state changes only the simulator's responses to the operations the manifest lists for
-it. States are not part of the FFI surface, and the executor reports their failures
-the same way as any other PTP failure.
+it. States are not part of the FFI surface. The executor reports the resulting
+failure like any other PTP failure, unless the action declares a failure condition
+for it (`MANIFEST_SCHEMA.md` §11.33; see "PTP failure conditions" below). The GFX100 II
+`enumerateObjects` and `importObjects` actions both declare one for the empty slot 1
+response, because both run the same page-selection step that the camera refuses.
 
 `POST /control/advance-property` accepts a property code such as
 `{"code":"0x500D"}`. It advances the current value by one position in the loaded
@@ -833,7 +836,8 @@ A fatal step returns `ExecutorError::StepFailed { step, kind, detail, context }`
 `kind` is the stable `ExecutorStepFailureKind`: `DeadlineExceeded` covers
 executor-owned verb backstops, step-level notification/poll budgets, and a
 transport-reported timeout; `ConditionRejected` identifies a manifest-declared
-terminal condition; `Other` covers every remaining failure. `context` contains
+terminal condition (a BLE rejection predicate, or a PTP action failure condition
+described below); `Other` covers every remaining failure. `context` contains
 only the key/value pairs explicitly selected by the controlling manifest step;
 the complete executor scope is never exposed. Consumers may map
 `DeadlineExceeded` from a readiness gate to retryable UI while keeping
@@ -846,6 +850,32 @@ does not advertise, and a subsequent launch is expected to reuse it. Do not
 infer the same disposition from `DeadlineExceeded`, `Other`, the step path, or
 the diagnostic text. A transport/link failure is not a refusal; release the
 failed BLE link before offering a scan/reconnect path.
+
+#### PTP failure conditions
+
+PTP actions can now end with kind `ConditionRejected`. Before this, only BLE
+plans produced that kind. The access-point launch handling above applies only to
+a BLE AP-launch establishment. Do not apply it to a PTP action failure: for a PTP
+action, branch on `context["condition"]` instead.
+
+Every PTP response failure that escapes an action carries `operation`,
+`response`, and `transactionId` in `context`. An action may declare failure
+conditions (`MANIFEST_SCHEMA.md` §11.33). When the failure that ends the action
+matches one, `PtpExecutorError::StepFailed` has kind `ConditionRejected`, and
+`context` adds `condition` followed by the condition's declared keys. A semantic
+activity active at that point fails with the same kind and with `condition` and
+the declared keys as its context. Retries, tolerance, and fallbacks behave
+exactly as they would without the rule.
+
+| `condition` | extra context | suggested handling |
+|---|---|---|
+| `mediaSlotUnavailable` | `slot` (decimal, 1-based) | Ask the user to check the card in that slot, for example "Check the card in slot 1", and offer a retry next to the hint. One classified failure is not proof: the same response was once seen briefly while a card was present and the camera was still settling, and the rule sees only the short retry inside one action. Only a response that persists across attempts and connections separates the two cases. Do not tell the user that no card is present. |
+
+Branch on `kind` and `context["condition"]`, never on `detail`, the step path,
+or the response code alone. Treat a
+`condition` value you do not recognize as an unclassified failure. The rules are
+read from the loaded manifest, so no FFI type describes them; they reach the app
+only as these context strings.
 
 ### 9.4 The Step grammar (reference)
 
