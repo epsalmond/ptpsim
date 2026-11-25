@@ -21,6 +21,10 @@ reads:
   protectedSerialString: { utf8: "PTPSIM-GFX100II-0001" }
   cameraSSIDNameString: { utf8: "ptpsim-ap" }
   cameraWiFiPassphraseString: { utf8: "ptpsim-pass" }
+notifications:
+  # The AP handoff after wake runs the same fenced launch as the pairing fixture.
+  - { gatt: apState, afterFencedWrite: { gatt: functionLaunchRequest, ordinal: 1 }, hex: "0280" }
+  - { gatt: apState, afterFencedWrite: { gatt: functionLaunchRequest, ordinal: 1 }, hex: "0180" }
 peerDisconnects:
   # Drop after the monitor's baseline seed read, then again during ble-wake.
   - { afterRead: apState }

@@ -1231,10 +1231,12 @@ and baseline values are exact wire-order bytes. Symbolic GATT names resolve
 through the model's merged manufacturer-index catalog at load time, exactly as
 BLE steps do; an undefined name fails the index load.
 
-After the consumer observes the declared trigger match, it sets
-`camera_initiated_transfer_active` true, opens the declared connection/socket
-role, and reads the count source. It performs metadata immediately after that
-count read when `phases` contains `afterCountBeforeModeEntry`, walks
+In a simulator test, setting `camera_initiated_transfer_active` true enables
+reserved queue routing. A BLE socket transfer scenario also emits the declared
+trigger values. After the consumer observes the trigger match, it opens the
+declared connection/socket role and reads the count source. It performs
+metadata immediately after that count read when `phases` contains
+`afterCountBeforeModeEntry`, walks
 `mode_entry`, and performs metadata afterward when phases contains
 `afterModeEntry`. It then reads the chunk limit and pulls the fixed head index
 through the declared data operation. GFX100 II

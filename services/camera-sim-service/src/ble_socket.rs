@@ -6,7 +6,7 @@
 //! names through the manufacturer index. Values come from the scenario or the
 //! loaded camera manifest.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -337,8 +337,16 @@ impl BleScenario {
                         "the running manifest has no camera-initiated transfer on '{connection}'"
                     ))
                 })?;
+            if transfer.trigger.states.is_empty() {
+                return Err(scenario_error(
+                    "cameraInitiatedTransfer needs at least one trigger characteristic",
+                ));
+            }
             for state in &transfer.trigger.states {
-                let uuid = resolve(&state.gatt)?;
+                let uuid = match canonical_uuid(&state.gatt) {
+                    Some(uuid) => uuid,
+                    None => resolve(&state.gatt)?,
+                };
                 let first_value = |values: &[String], kind: &str| {
                     values
                         .first()
@@ -354,11 +362,17 @@ impl BleScenario {
                     baseline: first_value(&state.baseline_values, "baseline")?,
                     triggered: first_value(&state.trigger_values, "trigger")?,
                 };
-                transfer_values.insert(uuid, values);
+                if transfer_values.insert(uuid.clone(), values).is_some() {
+                    return Err(scenario_error(format!("cameraInitiatedTransfer declares trigger characteristic '{uuid}' more than once")));
+                }
             }
         }
 
-        let catalog: Vec<String> = gatt.values().cloned().collect();
+        let catalog: BTreeSet<String> = gatt
+            .values()
+            .chain(transfer_values.keys())
+            .cloned()
+            .collect();
         let reads = file
             .reads
             .iter()

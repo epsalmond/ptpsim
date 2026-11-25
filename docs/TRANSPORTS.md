@@ -459,7 +459,8 @@ link, a startup advertisement, and an awake advertisement. After the wake
 plan and reconnect, trigger the manifest's transfer state with
 `camera-simctl state patch --overlay '{"camera_initiated_transfer_active":true}'`.
 Set the same field to `false` to restore baseline. The PTP/IP transfer queue
-is populated from the configured media root.
+is populated from the configured media root. The fixture also serves the
+ordinary fenced AP handoff for clients that request it after the trigger.
 
 `packages/fixtures/ble/gfx100ii-pair-handoff.yaml` serves the GFX100 II legacy
 pairing advert, the `ble-pair` plan and the `ble-establish-wifi-ap` handoff.

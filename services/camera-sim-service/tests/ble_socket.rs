@@ -1101,6 +1101,23 @@ async fn wake_and_transfer_fixture_pushes_the_manifest_state_to_the_reconnected_
         .ok("subscribe", json!({"uuid": transfer_state}))
         .await;
 
+    let prep = uuid(ble, "imageTransferSetting");
+    let launch = uuid(ble, "functionLaunchRequest");
+    client
+        .ok("write", json!({"uuid": prep, "value": "01"}))
+        .await;
+    client
+        .ok(
+            "write_fenced",
+            json!({"uuid": launch, "notify_uuid": ap_state, "value": "0300"}),
+        )
+        .await;
+    for value in ["0280", "0180"] {
+        let ready = json!({"event": "notification", "uuid": ap_state, "value": value});
+        assert_eq!(client.next_message().await, Some(ready));
+    }
+    assert!(running.link.is_armed(), "the AP handoff armed PTP/IP");
+
     patch_transfer_state(running.control_addr, false).await;
     for uuid in [&ap_state, &transfer_state] {
         let baseline = json!({"event": "notification", "uuid": uuid, "value": "0080"});
