@@ -1,0 +1,17 @@
+{"dir":"s2c","msg":{"event":"hello","protocol":"ptpsim-ble","version":1}}
+{"dir":"c2s","msg":{"id":1,"op":"await_disconnect"}}
+{"dir":"s2c","msg":{"id":1,"ok":false,"error":{"code":"not_connected","detail":""}}}
+{"dir":"c2s","msg":{"id":2,"op":"connect","peripheral":"6F1C2A4E-3B7D-4C59-8E21-0A9B4D7C3E15"}}
+{"dir":"s2c","msg":{"id":2,"ok":true,"mtu":247,"peripheral_name":null}}
+{"dir":"c2s","msg":{"id":3,"op":"await_disconnect"}}
+{"dir":"s2c","msg":{"id":3,"ok":true}}
+{"dir":"s2c","msg":{"event":"disconnected","peripheral":"6F1C2A4E-3B7D-4C59-8E21-0A9B4D7C3E15"}}
+{"dir":"c2s","msg":{"id":4,"op":"scan_start"}}
+{"dir":"s2c","msg":{"id":4,"ok":true}}
+{"dir":"s2c","msg":{"event":"advert","peripheral":"6F1C2A4E-3B7D-4C59-8E21-0A9B4D7C3E15","service_uuids":["AF854C2E-B214-458E-97E2-912C4ECF2CB8"],"manufacturer_data":"d8040244732a80","local_name":null,"service_data":{},"tx_power":null}}
+{"dir":"c2s","msg":{"id":5,"op":"connect","peripheral":"6F1C2A4E-3B7D-4C59-8E21-0A9B4D7C3E15"}}
+{"dir":"s2c","msg":{"id":5,"ok":true,"mtu":247,"peripheral_name":null}}
+{"dir":"c2s","msg":{"id":6,"op":"await_disconnect"}}
+{"dir":"s2c","msg":{"id":6,"ok":false,"error":{"code":"script_violation","detail":"peer disconnect not observed"}}}
+{"dir":"c2s","msg":{"id":7,"op":"disconnect"}}
+{"dir":"s2c","msg":{"id":7,"ok":true}}
