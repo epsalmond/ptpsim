@@ -649,17 +649,20 @@ tolerated, this is what is missing:
 | `steps[11].bleRead` | `reservationAfterShooting`. The app uses it only for analytics. |
 | `steps[12].bleRead` | `pairedSmartDeviceCount`. |
 | `steps[13].bleRead` | `firmware`, the 0x2A26 firmware version string. |
-| `steps[23].bleSubscribe` | AP-state indications were not enabled at registration. `legacy-app-establish-wifi-ap` subscribes again and polls by read, so it does not depend on this. |
 | `steps[28].bleRead` | `apState` as read at the end of registration. |
 
 Other tolerant steps cover optional writes, reads, and subscribes that the app
 treats the same way. The serial (`steps[9]`) and SSID (`steps[10]`)
-reads are strict, so a walk without them fails.
+reads are strict, so a walk without them fails. The AP-state subscribe
+(`steps[23]`) is also strict: the app never marks the link ready when its
+remaining CCCD writes all fail, so a link dropped during registration fails
+the walk instead of completing it.
 
 `legacy-app-establish-wifi-ap` fails with `ConditionRejected` when the camera
 reports AP state 3. In the legacy vendor mobile app, state 3 means reserved or
 automatic transfer, and the launch ends as not connectable. Present it as the
-camera being busy with an automatic transfer, not as a refusal of the request.
+camera being in its reserved (automatic) transfer state, so it cannot start
+this function now, rather than as a refusal of the request.
 
 ### 9.4 Walking PTP entry and action plans
 
