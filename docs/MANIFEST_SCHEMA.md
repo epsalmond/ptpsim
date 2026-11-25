@@ -999,8 +999,11 @@ The manifest names the quantity; the engine holds no per-code special cases.
 `streaming`) mapping a detected mode to a simulator workflow phase. When a
 mode's `detect` predicate selects it on a property write, the engine enters
 the declared phase. The phase applies on mode transitions; writes that keep
-the same mode leave in-session phase state (such as streaming) untouched. An
-unknown phase value is a manifest load error. Leaving a mode whose declared
+the same mode leave in-session phase state (such as streaming) untouched. A
+transition between two modes that declare the same phase also keeps the
+current phase and live-view lifecycle, so a selector write that moves a
+live-view session between sibling modes does not restart streaming (§11.34).
+An unknown phase value is a manifest load error. Leaving a mode whose declared
 phase is `imageImport` resets the simulator's bootstrap gate progress,
 including transitions into modes that declare no phase. Transport states
 (`disconnected`, `queuedReceive`, `closed`) are not declarable workflow
@@ -2566,7 +2569,9 @@ naming the state.
 `connections` or `modes` list means all, and a mode scope matches the declared
 path and its descendants. `modes` is matched against the detected mode only.
 Before the simulator has detected a mode, an override that names modes does
-not apply.
+not apply. Sibling modes are separate scopes: `shooting/stills` does not cover
+`shooting/video`, and `shooting` covers both. A connection-scoped detection
+(§11.34) can therefore move a session out of a response's mode scope.
 
 **Precedence.** These replies outrank a state response, in order: an installed
 fault, the missing-session refusal (`0x2003`), the silence of an unsatisfied
@@ -2724,3 +2729,72 @@ recognize as an unclassified failure.
 before this section was added rejects any manifest that declares
 `failureConditions`, so the whole manifest fails to load. Vendor the library
 and the manifests from the same revision.
+
+### 11.34 Mode detection (#570)
+
+A mode node may declare how the simulator and the consumer recognize it from
+observed property values. The simulator runs detection after every accepted
+`SetDevicePropValue`; a consumer runs it through the FFI `detect_mode`.
+
+```yaml
+modes:
+  shooting/stills:
+    detect: { prop: "0xdf01", eq: 0x16 }
+    phase: liveView
+  shooting/video:
+    detect: { all: [ { prop: "0xdf01", eq: 0x16 }, { prop: "0xd246", eq: 1 } ] }
+    detectConnections: [app]
+    phase: liveView
+```
+
+**Fields.** `detect` is a predicate in the closed grammar shared with
+`requires`: a leaf compares one property value (`eq`, `ne`, `lt`, `gt`, with an
+optional `mask`), and `all`, `any`, and `not` combine leaves. A leaf over a
+property that has not been observed is false, so `not` of that leaf is true.
+`detectConnections` lists the connection ids on which `detect` applies. An
+empty or absent list means every connection.
+
+**Selection.** Detection considers only modes whose `detect` applies on the
+session's connection and holds over the observed values. A mode with a
+non-empty `detectConnections` outranks a mode without one. Within the same
+rank, the first mode path in byte order wins. A scoped mode is therefore
+chosen only on a positive match. When its predicate fails, including when one
+of its properties was never observed, detection falls back to the unscoped
+modes. A scoped predicate is never evaluated on another connection, so other
+connections keep their detection by construction. When two scoped modes match
+on one connection, path order decides without a warning.
+
+**Load-time contract errors.** The manifest fails to load when:
+
+- a mode declares `detectConnections` without `detect`;
+- a `detectConnections` entry names no declared connection;
+- a `detectConnections` entry names a connection whose non-empty `modes` list
+  does not contain the mode's exact path.
+
+**Phase.** A transition between two modes that declare the same `phase` keeps
+the current phase and live-view lifecycle (§11.18). A selector write that moves
+a live-view session from one sibling mode to another therefore leaves
+streaming running.
+
+**Operation scope.** Detection only selects the mode. Which operations a mode
+accepts is still the operation row's `modes` list (§11.18). When a new mode is
+split from an existing one, each operation row on that connection must say
+whether it applies in the new mode. The convention for recording that choice
+is structural:
+
+- An operation positively observed in the new mode lists the mode in `modes`
+  and carries an `observedScopes` entry for the connection and mode, with the
+  evidence id in the row's `evidence`.
+- An operation carried into the new mode from current behavior, without
+  observation, lists the mode in `modes` and has no `observedScopes` entry for
+  it.
+- An operation left out of the new mode answers `OperationNotSupported` there.
+
+**Persistence.** Detection reads the simulator's current property values.
+`OpenSession` does not reset properties, so a selector value left from an
+earlier session still selects its mode on the next detection. This is a
+consequence of the property model, not camera evidence.
+
+**FFI.** `detect_mode(connection, observed)` applies the same selection for
+the given connection id. Mode nodes are not exported, so consumers see the
+result and not the predicates.
