@@ -7,12 +7,6 @@ use ptp_core::codes::datatype_code as dt;
 use ptp_core::dataset::{DevicePropDesc, PropForm, PropValue};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-/// Fuji function-mode major selector property. Unreferenced by the engine;
-/// kept for the dead-surface audit (#410). The function-mode minor selector
-/// that drives workflow phase is manifest data now (modes.*.detect + phase,
-/// #407), not an engine constant.
-pub const PROP_DF00: u16 = 0xdf00;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
     Disconnected,
@@ -255,16 +249,6 @@ impl CameraState {
             self.gate_progress.remove(&key);
         } else {
             self.gate_progress.insert(key, progress);
-        }
-    }
-
-    /// The manifest control-mode key matching the current phase, used to resolve
-    /// "intent -> mechanism" the same way the app does.
-    pub fn mode_key(&self) -> &'static str {
-        match self.phase {
-            Phase::LiveView | Phase::Streaming => "liveView",
-            Phase::ImageImport => "imageImport",
-            _ => "",
         }
     }
 

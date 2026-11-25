@@ -293,16 +293,6 @@ impl NativePtpTransport {
         Ok(opened)
     }
 
-    pub async fn open_auxiliary(&self, include_live_view: bool) -> Result<(), PtpTransportError> {
-        if self.event_port.is_some() {
-            self.open_manifest_channel(SocketRole::Event).await?;
-        }
-        if include_live_view && self.live_view_port.is_some() {
-            self.open_manifest_channel(SocketRole::LiveView).await?;
-        }
-        Ok(())
-    }
-
     async fn open_manifest_channel(&self, role: SocketRole) -> Result<(), PtpTransportError> {
         let camera = self.config.camera.ok_or_else(|| {
             failed(format!(
@@ -2218,17 +2208,15 @@ fn decode_u32_array(payload: &[u8]) -> Result<Vec<u32>, String> {
         .collect())
 }
 
+/// The manifest platform this binary was built for. `cfg!` keeps every branch
+/// compiled on every target. CI still builds this crate for Linux only, so
+/// the rest of the crate is not checked on macOS or Android.
 pub(crate) fn current_platform() -> Platform {
-    #[cfg(target_os = "macos")]
-    {
+    if cfg!(target_os = "macos") {
         Platform::Macos
-    }
-    #[cfg(target_os = "android")]
-    {
+    } else if cfg!(target_os = "android") {
         Platform::Android
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "android")))]
-    {
+    } else {
         Platform::Linux
     }
 }
