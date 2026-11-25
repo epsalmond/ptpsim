@@ -1,10 +1,10 @@
 ---
-description: The durable PR review-thread workflow — pinning reviews to SHAs, triaging threads, delegating fixes, delta reviews, and readiness gates ending in agent self-merge.
+description: The durable PR review-thread workflow: pinning reviews to SHAs, triaging threads, delegating fixes, delta reviews, and readiness gates ending in agent self-merge.
 status: reference
 read-when: Running or remediating a /code-review pass, resuming a PR after context loss, or deciding whether a PR is review-complete.
 ---
 
-# Code review workflow — durable PR threads, bounded fixes
+# Code review workflow: durable PR threads, bounded fixes
 
 Review state lives on the pull request, not in agent chat or an in-process task
 list. Context compaction, session restarts, and model changes must not trigger a

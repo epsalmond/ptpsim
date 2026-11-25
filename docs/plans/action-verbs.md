@@ -1,14 +1,14 @@
 ---
-description: Approved schema decision (2026-06-02, Option 3 with reviewer refinements) adding action verbs — capture/transfer sequences — to the manifest alongside entries[] mode transitions.
+description: Approved schema decision (2026-06-02, Option 3 with reviewer refinements) adding action verbs (capture/transfer sequences) to the manifest alongside entries[] mode transitions.
 status: shipped
 read-when: Understanding why manifest actions are modeled as verbs distinct from mode-transition entries.
 ---
 
-# Action verbs in the manifest — schema decision
+# Action verbs in the manifest: schema decision
 
 **Authors:** ptpsim
 **Created:** 2026-06-02
-**Triggered by:** the PCSS shoot-download wire trace (`wirePCSSShootDownload20260523`) — capture + transfer sequences need a manifest surface that today's `entries[]` doesn't model
+**Triggered by:** the PCSS shoot-download wire trace (`wirePCSSShootDownload20260523`); capture + transfer sequences need a manifest surface that today's `entries[]` doesn't model
 
 ## Problem
 
@@ -32,8 +32,8 @@ That fits "enter a mode," but two newly wire-confirmed PCSS sequences don't:
 - setProp 0xD039 = 0x00000001  → 0x100E(0, 0)
 ```
 
-Camera state before and after is `shooting/stills`. This isn't a mode entry
-— it's an **action within a mode** ("fire the shutter").
+Camera state before and after is `shooting/stills`. This isn't a mode entry.
+It's an **action within a mode** ("fire the shutter").
 
 ### Transfer (parameterized triad)
 
@@ -62,7 +62,7 @@ recipe vocabulary.
 
 ## Options considered
 
-### Option 1 — Pseudo-modes
+### Option 1: Pseudo-modes
 
 Express capture as a mode-entry that re-enters the same mode:
 
@@ -81,12 +81,12 @@ connections:
 ```
 
 **Pros:** zero schema change. Uses existing types.
-**Cons:** semantically wrong — `shutter-fired` isn't a camera mode, it's an
+**Cons:** semantically wrong: `shutter-fired` isn't a camera mode, it's an
 action outcome. Pollutes the mode graph with non-modes. `detect_mode` would
 need to know which modes are transient. Transfer recipes still don't fit
 (they're parameterized by `handle`, not a mode entry).
 
-### Option 2 — `verb:` field on `Entry`
+### Option 2: `verb:` field on `Entry`
 
 Make `Entry.to` optional, add `Entry.verb: Option<String>`. If `verb` is set,
 the entry is "named recipe to run while in `mode`":
@@ -112,7 +112,7 @@ same type, which complicates `mode_entry` lookup vs `action` lookup at the
 query surface. Existing tests for `entries[].to` keep working unchanged, but
 the client API has to pick which kind of `Entry` it's looking for.
 
-### Option 3 — New `actions:` block (APPROVED)
+### Option 3: New `actions:` block (APPROVED)
 
 Sibling to `entries:`. **Closed-vocabulary** (`ActionVerb` enum) keyed map of
 parameterized step sequences gated to a mode, with **declared side-effects**
@@ -184,7 +184,7 @@ connections:
 ## Recommendation
 
 **Option 3.** The "parameterized intra-mode action" concept is genuinely
-distinct from "mode entry" and will compound — capture, transfer, vendor-
+distinct from "mode entry" and will compound: capture, transfer, vendor-
 prime, live-view restart, autofocus probes are all this shape. Adding the
 typed field now is one schema change; layering verbs onto `Entry` would
 either pollute the type or require this same change later under a different
@@ -195,9 +195,9 @@ name.
 1. **Schema (`crates/camera-config/src/model.rs`)**:
    - `pub enum ActionVerb { Shutter, EnumerateObjects, GetObjectInfo, GetThumb,
      GetObject, DeleteObject, StartLiveView, PollLiveView, StopLiveView,
-     Keepalive, ... }` — **closed vocabulary**. New
+     Keepalive, ... }`: **closed vocabulary**. New
      verbs require a schema PR (same fail-fast as Step verbs).
-   - `pub struct ActionEffect` — flat struct mirroring the `Step` pattern
+   - `pub struct ActionEffect`: flat struct mirroring the `Step` pattern
      (one optional field per variant, `deny_unknown_fields`). Fields:
      `objects_available: Option<ObjectsAvailable { min: u32, max: u32 }>` (PCSS
      1-3 / burst-mode-N), `postview_event: Option<PostviewEvent>` (reference app
@@ -215,21 +215,21 @@ name.
      caller-scheduled loop iteration; cadence is intentionally not modeled
      because captures show bursts and variable intervals.
    - `shutter.triggers: [{ objectsAvailable: { min: 1, max: 3 } }]` on
-     wireless-tether — the camera makes 1-3 objects available depending on
+     wireless-tether; the camera makes 1-3 objects available depending on
      the user's JPEG / HEIF / RAW format selection.
 3. **Tests**: assert the 3-beat shutter values, the runtime-`handle` binding
    in `getObject`, `triggers: [objectsAvailable]` on the PCSS shutter, and that
    `action(wireless-tether, Shutter)` resolves.
 4. **INTEGRATION.md** §7 (Golden rules): a one-liner adding "no shutter
-   sequences in app source — ask `action(connection, ActionVerb::Shutter)`;
+   sequences in app source: ask `action(connection, ActionVerb::Shutter)`;
    read `.triggers` to plan UX side-effects."
 
 ## Decisions (Q1/Q2/Q3 from reviewer, 2026-06-02)
 
-### Q1 — Action-name namespace: **enum, not free-form**
+### Q1: Action-name namespace: **enum, not free-form**
 
 Original recommendation was free-form to allow new manufacturer-tier verbs
-without schema PRs. **Conceded:** that argument conflated two things —
+without schema PRs. **Conceded:** that argument conflated two things:
 manifest-data growth (a new camera's bytes for an existing verb) is fine as
 data; action-vocab growth (a genuinely new concept like "focus bracket sweep"
 or "panorama stitch") requires app-side reasoning anyway, so gating it on a
@@ -237,18 +237,18 @@ code change is the *right* behavior. Free-form would let manifest data drift
 ahead of client awareness. Enum + fail-fast on unknown variant matches the
 Step-verb allowlist pattern.
 
-### Q2 — Response capture (`captureAs:` on Step): **defer**
+### Q2: Response capture (`captureAs:` on Step): **defer**
 
 Original proposal included `captureAs:` on `Step` to bind decoded responses
 to a named slot a later step could reference via `runtime:`. **Deferred**:
 all currently-modeled actions are one observable op (plus optional setprop
 scaffolding). Multi-step actions on the table don't have intra-sequence data
-flow — `enumerateObjects` returns handles; the **client** iterates them and
+flow: `enumerateObjects` returns handles; the **client** iterates them and
 calls `getObjectInfo(h)`. **Action return value = response slot.** Revisit
 if a future action genuinely needs to plumb a response field into a later
 step's param within one recipe.
 
-### Q3 — Composability: **declared side-effects, not action-calling-action**
+### Q3: Composability: **declared side-effects, not action-calling-action**
 
 Original framing was "should one action invoke another"; the reviewer
 sharpened it. On wireless-tether, the camera makes captured objects available
@@ -256,7 +256,7 @@ after `shutter`; the app needs to poll/download and show progress without
 knowing the connection-specific transfer choreography.
 
 **Decision**: `Action.triggers: Vec<ActionEffect>` declares what arrives
-after the action completes. Engine does **not** act on it — pure declaration
+after the action completes. Engine does **not** act on it; it is a pure declaration
 for the client to plan UX:
 
 | connection | `Shutter.triggers` | app behavior |
@@ -265,8 +265,8 @@ for the client to plan UX:
 | `app` | `[{ postviewEvent: {} }]` (when modeled) | wait for the event then prompt user to switch to Get |
 | `ble` (remote-trigger, when modeled) | `[]` | fire and forget |
 
-This is *not* control flow in the engine sense. It's a **Recipe** — same
+This is *not* control flow in the engine sense. It's a **Recipe**. Same
 sans-io model: client owns control flow; manifest declares bytes AND
 post-conditions.
 
-— ptpsim
+ptpsim

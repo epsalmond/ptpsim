@@ -1,14 +1,14 @@
 ---
-description: Consuming the published CameraProtocolFFI .aar from a Kotlin/Android app — release contents, bundled ABIs, and Gradle wiring.
+description: Consuming the published CameraProtocolFFI .aar from a Kotlin/Android app: release contents, bundled ABIs, and Gradle wiring.
 status: reference
 read-when: Integrating or updating the Android bindings, or debugging Android packaging/ABI issues.
 ---
 
-# Android integration — consuming `CameraProtocolFFI` from a Kotlin app
+# Android integration: consuming `CameraProtocolFFI` from a Kotlin app
 
 How an Android consumer wires up the Rust + uniffi Kotlin bindings
 from a published release. Parallel to `docs/SPM_INTEGRATION.md` (iOS),
-same FFI surface (`ConfigStore`, `Action`, `Step`, etc.) — just different
+same FFI surface (`ConfigStore`, `Action`, `Step`, etc.), just different
 packaging.
 
 ## What's in the release
@@ -30,11 +30,11 @@ ZIP checksum attached to the same release.
 
 Three ABIs are bundled, covering everything except 32-bit x86:
 
-- `arm64-v8a` (aarch64-linux-android) — modern devices + emulators
-- `armeabi-v7a` (armv7-linux-androideabi) — older 32-bit ARM devices
-- `x86_64` (x86_64-linux-android) — emulators
+- `arm64-v8a` (aarch64-linux-android): modern devices + emulators
+- `armeabi-v7a` (armv7-linux-androideabi): older 32-bit ARM devices
+- `x86_64` (x86_64-linux-android): emulators
 
-The `.aar` is consumed as a normal Gradle **file dependency** — no hand-copying
+The `.aar` is consumed as a normal Gradle **file dependency**, with no hand-copying
 of loose `.so` / `.kt` files. (It is attached to a GitHub release rather than
 published to Maven; a Maven/JitPack coordinate is a possible future follow-up,
 but a file dependency needs no repository wiring.)
@@ -51,7 +51,7 @@ gh release download "$TAG" \
     --dir path/to/your/app/libs
 ```
 
-### 2. `build.gradle` (or `build.gradle.kts`) — add runtime dependencies
+### 2. `build.gradle` (or `build.gradle.kts`): add runtime dependencies
 
 ```kotlin
 android {
@@ -72,7 +72,7 @@ dependencies {
 > `abiFilters`). You do **not** add `jniLibs` or copy the Kotlin source.
 
 > **JNA is required.** uniffi's Kotlin runtime calls the native library through
-> JNA. The `@aar` suffix is mandatory — JNA ships separate JVM (`.jar`) and
+> JNA. The `@aar` suffix is mandatory: JNA ships separate JVM (`.jar`) and
 > Android (`.aar`) artifacts; without the suffix Gradle picks the JVM one and
 > the JNI library is missing at runtime. `5.14.0` matches the JNA the bindings
 > were compiled against in CI.
@@ -86,7 +86,7 @@ dependencies {
 
 ### 3. Use the FFI
 
-Same `ConfigStore` API as iOS — the FFI surface is platform-neutral. See
+Same `ConfigStore` API as iOS; the FFI surface is platform-neutral. See
 `docs/INTEGRATION.md` for the full call list. The Kotlin runtime mirrors
 the Swift one:
 
@@ -119,9 +119,9 @@ file, is a possible future follow-up.)
 
 ## See also
 
-- `docs/INTEGRATION.md` — full FFI surface + integration pattern
-- `docs/SPM_INTEGRATION.md` — the iOS equivalent
-- `ci/build-android.sh` — the build recipe (runnable locally if you
+- `docs/INTEGRATION.md`: full FFI surface + integration pattern
+- `docs/SPM_INTEGRATION.md`: the iOS equivalent
+- `ci/build-android.sh`: the build recipe (runnable locally if you
   have Rust + Android NDK + the 3 targets + `kotlinc` + a JNA jar)
-- `.github/workflows/linux.yml` — the CI step that publishes the `.aar`
+- `.github/workflows/linux.yml`: the CI step that publishes the `.aar`
 - `ci/github-linux-setup.sh` and the Linux workflow install the hosted build tools

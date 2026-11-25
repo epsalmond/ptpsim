@@ -4,10 +4,10 @@ status: historical
 read-when: Digging into the original seam-shape rationale; use docs/INTEGRATION.md for the current surface.
 ---
 
-# G4 — `camera-protocol-ffi` surface design (the iOS/macOS seam)
+# G4: `camera-protocol-ffi` surface design (the iOS/macOS seam)
 
 > **Partially superseded (2026-07-12, #246):** the app-side plan-walking this
-> sketch assumes ("app sends bytes" dispatcher loops) is now the legacy path —
+> sketch assumes ("app sends bytes" dispatcher loops) is now the legacy path:
 > the executor entry points (`runEstablishment` / `runBleAction` /
 > `runPostExitReadiness`) walk plans engine-side over foreign async traits.
 > See `docs/INTEGRATION.md` §9.3. The seam-shape decisions below still stand.
@@ -22,14 +22,14 @@ GFX100 II manifest. Consumes `ios-adoption.md` (G4) and `camera-config.md`.
    not a `.udl` file. Current-recommended; keeps the surface next to the Rust.
 2. **The seam is `(connection, mode)`-keyed.** Every capability/gating query takes a
    `connection` id + a `mode` path. This is the anti-re-port decision: the app asks
-   *"is this op valid over `connection` in `mode`?"* — adding a transport is a manifest
+   *"is this op valid over `connection` in `mode`?"*; adding a transport is a manifest
    row + the app's own socket/USB code, never a change to this surface.
 3. **Sans-io.** Nothing here touches a socket, USB, or CoreBluetooth. Queries are pure
    over manifest data + observed values the app supplies. Codecs turn intents↔bytes.
    The app owns every byte on the wire and every OS API.
 4. **One loaded `ConfigStore` object** (Arc interface), built once from bundled manifest
    bytes (+ OTA later), queried many times. Records pass by value.
-5. **Sync, not async** — queries and codecs are pure/instant. Async/poll is a Phase-B
+5. **Sync, not async**: queries and codecs are pure/instant. Async/poll is a Phase-B
    (stateful session driver) concern, deferred.
 
 ---
@@ -38,7 +38,7 @@ GFX100 II manifest. Consumes `ios-adoption.md` (G4) and `camera-config.md`.
 
 ```rust
 /// Loaded, queryable camera config. Built from bundled YAML (manufacturer + body);
-/// OTA bundle loading lands later. Arc interface — construct once, query freely.
+/// OTA bundle loading lands later. Arc interface: construct once, query freely.
 #[derive(uniffi::Object)]
 pub struct ConfigStore { /* wraps camera_config::ConfigStore */ }
 
@@ -52,7 +52,7 @@ impl ConfigStore {
 
     // --- WHERE: connections (filtered by the calling platform) ---
     /// Connections valid on `platform` under the camera's firmware. USB/wireless-tether
-    /// hidden on iOS; instax filtered out by firmware (availableWhen) — all from data.
+    /// hidden on iOS; instax filtered out by firmware (availableWhen); all from data.
     pub fn connections(&self, platform: Platform) -> Vec<ConnectionInfo>;
 
     /// How to bring `connection` up from where you are (BLE→WiFi-AP handover, PCSS knock).
@@ -60,7 +60,7 @@ impl ConfigStore {
     pub fn establishment(&self, connection: String) -> Option<EstablishmentPlan>;
 
     // --- WHERE: socket binding roles + derived ports (#140) ---
-    /// The port to bind for `role` (command/event/live-view) — the app binds by role
+    /// The port to bind for `role` (command/event/live-view); the app binds by role
     /// instead of hardcoding the Fuji command port + `+1`/`+2` offsets. `None` = no such socket.
     pub fn port_for_role(&self, connection: String, role: SocketRole) -> Option<u16>;
     pub fn socket_bindings(&self, connection: String) -> Vec<SocketBindingInfo>; // command → event → live-view
@@ -77,7 +77,7 @@ impl ConfigStore {
     pub fn detect_mode(&self, connection: String, observed: Vec<PropObservation>)
         -> Option<String>;
 
-    /// The wire-action plan to enter `to` (optionally from a known mode — the cheaper
+    /// The wire-action plan to enter `to` (optionally from a known mode, the cheaper
     /// teardown-free switch when `from` is set). Steps are a closed vocabulary; the app
     /// executes them over its transport. Or a userInstruction (camera-menu / not app-driven).
     pub fn mode_entry(&self, connection: String, from: Option<String>, to: String)
@@ -89,7 +89,7 @@ impl ConfigStore {
     ) -> Availability;
 
     /// Intent→mechanism: how to set `prop` over this connection/mode (App vendor-step vs
-    /// tether absolute — mechanism varies by connection).
+    /// tether absolute; mechanism varies by connection).
     pub fn control_for(&self, connection: String, mode: String, prop: u16)
         -> Option<ControlInfo>;
 
@@ -98,7 +98,7 @@ impl ConfigStore {
 
     pub fn value_label(&self, prop: u16, value: i64) -> Option<String>;
 
-    /// The camera's tap-to-focus AF grid (#135) — the app reads dims from data
+    /// The camera's tap-to-focus AF grid (#135): the app reads dims from data
     /// and packs a tap via `pack_af_area`, never hardcoding the grid.
     pub fn focus_grid(&self) -> Option<FocusGridInfo>;
 }
@@ -120,7 +120,7 @@ pub struct ConnectionInfo {
     //   and, via the accessors above, socket bindings (#140).
 }
 
-#[derive(uniffi::Enum)]  // #140 — bind by role, not by hardcoded Fuji offsets
+#[derive(uniffi::Enum)]  // #140: bind by role, not by hardcoded Fuji offsets
 pub enum SocketRole { Command, Event, LiveView }
 
 #[derive(uniffi::Record)]
@@ -209,28 +209,28 @@ pub enum ConfigError {
 
 ---
 
-## B. Codec functions (G1–G3 workstream — pure intents↔bytes)
+## B. Codec functions (G1–G3 workstream: pure intents↔bytes)
 
 Sans-io: they return/consume `Vec<u8>`, the app does the socket/USB write. **G1–G3 landed
 (#133).** Codec errors surface as `CodecError { Encode | Decode }`. Framing is selected per
 call by `PtpFraming { Standard | Compressed | Usb }`, which the consumer **reads from the
-manifest** — `ConnectionInfo.command_framing` / `event_framing` — so the connection→framing
+manifest** (`ConnectionInfo.command_framing` / `event_framing`), so the connection→framing
 choice is data, never a `kind`-mapping in the app's own code (no manufacturer knowledge left in
 Swift). Command vs event can differ: the Fuji `app` command channel is `Compressed` while its
 event socket is the PIMA type-4 container (`Usb`). All three share the `ptp-core` container
 payloads; only the header differs.
 
 ```rust
-// G1 — Fuji reference app 82-byte init (identity from value-policy, fixed name field)
+// G1: Fuji reference app 82-byte init (identity from value-policy, fixed name field)
 #[uniffi::export] fn build_app_init(guid: Vec<u8>, friendly_name: String) -> Result<Vec<u8>, CodecError>;
 #[uniffi::export] fn validate_init_ack(packet: Vec<u8>) -> Result<(), CodecError>;
 #[uniffi::export] fn normalize_client_name(raw: String) -> String;  // #139: canonical terminalName for BLE+PTP/IP (one value, #109)
 #[uniffi::export] fn pack_af_area(x: f64, y: f64, columns: u32, rows: u32, prior_lock_state: Option<u32>) -> u32;  // #135: tap → 0x9026 AF-area (grid from focus_grid())
 
-// G2 — value codec (per-value semantics are manifest data; this writes the bytes)
+// G2: value codec (per-value semantics are manifest data; this writes the bytes)
 #[uniffi::export] fn encode_value(value: i64, width: ValueWidth) -> Result<Vec<u8>, CodecError>;
 
-// G3 — PTP/IP packet framing (all framings via PtpFraming)
+// G3: PTP/IP packet framing (all framings via PtpFraming)
 #[uniffi::export] fn build_command(framing: PtpFraming, op: u16, txn: u32, params: Vec<u32>) -> Result<Vec<u8>, CodecError>;
 #[uniffi::export] fn build_data(framing: PtpFraming, op: u16, txn: u32, payload: Vec<u8>) -> Result<Vec<u8>, CodecError>;
 #[uniffi::export] fn parse_response(framing: PtpFraming, packet: Vec<u8>) -> Result<ResponseFrame, CodecError>;
@@ -238,7 +238,7 @@ payloads; only the header differs.
 #[uniffi::export] fn parse_data_phase(framing: PtpFraming, packet: Vec<u8>) -> Result<DataPhaseFrame, CodecError>;  // Standard streams Start/Data/End; Fuji/USB deliver one Data frame
 #[uniffi::export] fn parse_event(framing: PtpFraming, packet: Vec<u8>) -> Result<Option<CameraEvent>, CodecError>;
 
-// G3 — dataset codecs (framing-independent payloads)
+// G3: dataset codecs (framing-independent payloads)
 #[uniffi::export] fn parse_object_info(payload: Vec<u8>) -> Result<PtpObjectInfo, CodecError>;       // generic ISO-15740 fields
 #[uniffi::export] fn parse_device_prop_desc(payload: Vec<u8>) -> Result<PtpDevicePropDesc, CodecError>; // PtpValue / PtpPropForm
 #[uniffi::export] fn parse_live_status(payload: Vec<u8>) -> Result<LiveStatus, CodecError>;          // 0xd212 record stream
@@ -247,10 +247,10 @@ payloads; only the header differs.
 
 Records/enums: `ResponseFrame { response_code, txn, params }`, `CameraEvent { code, txn, params }`,
 `DataPhaseFrame { kind: DataPhaseKind (Start|Data|End), txn, total_length?, payload }` (total_length
-set only on `Start`; the Fuji compressed and USB channels use a single `Data` frame — see the
+set only on `Start`; the Fuji compressed and USB channels use a single `Data` frame; see the
 byte-exact reconciliation in `fuji_framing`),
-`PtpObjectInfo` (the generic `ObjectInfo` fields; media classification is `media_format()` — which
-carries `is_raw`/`is_movie`/`is_photos_compatible` (#136) — plus
+`PtpObjectInfo` (the generic `ObjectInfo` fields; media classification is `media_format()` (which
+carries `is_raw`/`is_movie`/`is_photos_compatible`, #136) plus
 `object_info_size_sentinel()` for saturated 32-bit reported sizes),
 `PtpDevicePropDesc { code, datatype, get_set, factory_default, current, form }` over
 `PtpValue { U8|U16|U32|U64|Str }` and `PtpPropForm { None | Range | Enum }`, `LiveStatus { records:
@@ -264,14 +264,14 @@ manifest-driven `encode_value`.
 
 ---
 
-## How the app uses it — the multi-transport seam (Swift)
+## How the app uses it: the multi-transport seam (Swift)
 ```swift
 let store = try ConfigStore.fromBundle(bodyYaml: gfx, manufacturerYaml: fuji)
 
 // "What can I connect over, here on macOS?"  → app, usb, wireless-tether, xlv (NOT instax/ble-hidden by fw/platform)
 for c in store.connections(platform: .macos) { … }
 
-// Bring up the App connection from BLE — app drives GATT using the returned params.
+// Bring up the App connection from BLE; app drives GATT using the returned params.
 if let plan = store.establishment(connection: "app") { /* app does the BLE/WiFi I/O */ }
 
 // Enter live-view: execute the wire steps over whatever transport is active.
@@ -279,7 +279,7 @@ if let entry = store.modeEntry(connection: "app", from: nil, to: "Shooting/Still
     for step in entry.steps { /* app sends bytes via build_command etc. */ }
 }
 
-// Gate a control — SAME call whether App or wireless-tether; mechanism differs in data.
+// Gate a control: SAME call whether App or wireless-tether; mechanism differs in data.
 switch store.operationAvailable(connection: conn, mode: "Shooting/Stills", op: 0x902d, observed: obs) {
 case .available: …
 case .wrongConnection, .wrongMode, .blocked, .unavailable: …
@@ -294,10 +294,10 @@ seam change. That is the property we're buying.
 
 ## Open items (verify during build, per ios-adoption #3/#5)
 - **xcframework build** wired into XcodeGen `project.yml` (no precedent in the repo).
-- **Vec<u8>↔Data copy cost** for 12 MiB image chunks — measure; keep chunked downloads.
-- **Async/poll** only matters for Phase B (stateful `PtpSession` feed/poll pump) — out of
+- **Vec<u8>↔Data copy cost** for 12 MiB image chunks: measure; keep chunked downloads.
+- **Async/poll** only matters for Phase B (stateful `PtpSession` feed/poll pump), out of
   scope here; this surface is sync.
-- **Establishment byte-builders** (PCSS knock payload, BLE writes) — likely small codec
+- **Establishment byte-builders** (PCSS knock payload, BLE writes): likely small codec
   fns like `build_app_init`; added when wireless-tether/USB I/O lands in the app.
 - **Private overlay**: XLV bearer token / BLE access-gate are NOT in the bundled manifest;
   the app supplies them out-of-band (the surface never carries the secret).

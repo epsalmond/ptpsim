@@ -1,5 +1,5 @@
 ---
-description: How Apple FFI artifacts are promoted from merged main commits — supported xcframework slices and the tag-driven promotion procedure.
+description: How Apple FFI artifacts are promoted from merged main commits: supported xcframework slices and the tag-driven promotion procedure.
 status: reference
 read-when: Cutting or consuming an Apple FFI release, or changing the xcframework release pipeline.
 ---
@@ -199,7 +199,7 @@ xcodebuild -create-xcframework \
 
 **Drift vs the original draft (resolved):**
 * `uniffi-bindgen-swift` (separate 0.28-era binary) → single `uniffi-bindgen` shipped by our crate; `-l swift` selects Swift, `-l kotlin` / `-l python` reach Android + Linux from the same binary (P2).
-* `--module-name` CLI flag is gone in 0.31 — moved to `[bindings.swift] module_name = ...` in `crates/camera-protocol-ffi/uniffi.toml`.
+* `--module-name` CLI flag is gone in 0.31; it moved to `[bindings.swift] module_name = ...` in `crates/camera-protocol-ffi/uniffi.toml`.
 * `--library` flag deprecated; auto-detected from the .a path.
 
 **Distribution:** an `apple-ffi-<sha8>` promotion tag identifies a validated,

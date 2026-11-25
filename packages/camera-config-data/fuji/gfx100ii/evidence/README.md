@@ -1,4 +1,4 @@
-# GFX100 II fw0230 — protocol evidence
+# GFX100 II fw0230 protocol evidence
 
 Provenance documents backing `../fw0230.yaml`. These are **evidence, not a
 load-time dependency** (per `DESIGN.md`: "a manifest must validate against
@@ -16,7 +16,7 @@ distilled into `fw0230.yaml` (or a richer manifest schema).
 | File | What it is |
 |---|---|
 | `FIRMWARE_230_AUDIT.md` | Firmware 2.30 audit reconciliation: generated operation inventories, callable scope boundaries, live-view descriptors, and outstanding evidence questions. |
-| `PTP_PROPERTIES_REFERENCE.md` | Consolidated PTP-IP reference for GFX100 II fw 2.30 — property/DPC codes, F-number/shutter/ISO encodings, the `0xD212` live-view composite bundle, live-view stream-config DPCs (§3.9/§4.1.1), the still-capture sequence (§6), and the image-enumeration sequence (§8/§11). Reconciled 2026-05-26 with the app's latest readings (one-open-capture-session model; aperture direct-set ACK-but-ignored; corrected `0x902C/D/E` step opcodes; `0x9054/0x9055/0x9050/0x9053 → 0xD620/0xD621` enumeration). Mobile Wi-Fi PTP/IP. |
+| `PTP_PROPERTIES_REFERENCE.md` | Consolidated PTP-IP reference for GFX100 II fw 2.30: property/DPC codes, F-number/shutter/ISO encodings, the `0xD212` live-view composite bundle, live-view stream-config DPCs (§3.9/§4.1.1), the still-capture sequence (§6), and the image-enumeration sequence (§8/§11). Reconciled 2026-05-26 with the app's latest readings (one-open-capture-session model; aperture direct-set ACK-but-ignored; corrected `0x902C/D/E` step opcodes; `0x9054/0x9055/0x9050/0x9053 → 0xD620/0xD621` enumeration). Mobile Wi-Fi PTP/IP. |
 | `D212_HETEROGENEOUS_RECORDS_20260719.md` | Public byte-level reduction of the complete D22F-only and mixed numeric/PTP-string app-persona `0xD212` snapshots, including the typed member-absence boundary. |
 | `IMAGE_IMPORT_EMPTY_SLOT_20260718.md` | Public reduction of one field session in which image-import operation `0x9050` answered `0x2019` on every attempt while memory card slot 1 was empty, with its uncertainty and unmodeled behavior. Backs the `memoryCardSlot1Empty` simulator state. |
 

@@ -3,13 +3,13 @@
 `extract_golden.py` is the **canonical** way to turn a capture into a public
 fixture. It cherry-picks one frame, redacts it, and writes a small **labeled**
 artifact under `packages/camera-config-data/golden/`. The label + decoded summary make
-each golden self-documenting — you reference the golden, not the original pcap.
+each golden self-documenting: you reference the golden, not the original pcap.
 
 ## The discipline (why this tool exists)
 
 Raw captures never enter this (public) repo. They live outside it and are read
 in place. Only minimal, redacted, labeled
-golden packets are committed. A golden records its source by **name only** — not
+golden packets are committed. A golden records its source by **name only**, not
 the path, not the bytes of anything but the one frame it documents.
 
 - **frida** blobs are already cherry-picked at runtime (one frame per blob), so
@@ -22,7 +22,7 @@ the path, not the bytes of anything but the one frame it documents.
 Redaction replaces known device-identifying byte sequences (the GFX100 II
 GUID; add more with `--redact <hex>`) with equal-length zeros so frame offsets
 are preserved. Always eyeball a new golden's `bytes_hex` for residual identifiers
-before committing — especially `Init*` frames (GUIDs) and any data-phase frame
+before committing, especially `Init*` frames (GUIDs) and any data-phase frame
 that carries a serial.
 
 ## Usage
@@ -35,7 +35,7 @@ python3 tools/golden/extract_golden.py frida --blobs <dir> --select op:0x1002 \
     --label open-session-request --transport app --firmware 2.30 \
     --description "OpenSession on the reference app command channel."
 
-# tcpdump/pcap — note the mandatory --host (only that address is copied):
+# tcpdump/pcap: note the mandatory --host (only that address is copied):
 python3 tools/golden/extract_golden.py pcap --file walk.pcapng --host 192.168.0.1 \
     --port 55740 --select op:0x1001 --label get-device-info-request --transport pcss
 
@@ -43,7 +43,7 @@ python3 tools/golden/extract_golden.py raw --file request.bin --label some-frame
     --transport usb
 
 
-# The bulk data transfer (a 100 MB+ RAW) is skipped — only the tiny op/response/
+# The bulk data transfer (a 100 MB+ RAW) is skipped; only the tiny op/response/
 # event containers are retained.
 python3 tools/golden/extract_golden.py usbscan --file xraw_capture.pcap
 python3 tools/golden/extract_golden.py usbmon --file xraw_capture.pcap --select op:0x1001 \

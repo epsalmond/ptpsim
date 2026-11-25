@@ -1,4 +1,4 @@
-# App-persona D212 heterogeneous records — 2026-07-19
+# App-persona D212 heterogeneous records (2026-07-19)
 
 This public reduction records the byte-level facts used to describe the
 GFX100 II firmware 2.30 app-persona `0xD212` payload. It contains no private

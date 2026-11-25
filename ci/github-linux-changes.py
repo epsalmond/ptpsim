@@ -46,11 +46,11 @@ def selection(event_name, event, checkout=None):
     else:
         raise ValueError(f"unsupported event: {event_name}")
 
-    # The docs lint checks em dashes only on lines added since docs_base. A
-    # pull request checkout is GitHub's merge of the head into the base
-    # branch, whose first parent can be newer than the event's base. When
-    # docs_base is empty, the lint falls back to the origin/main merge base;
-    # after a main push that is HEAD, so it compares nothing and says so.
+    # The docs lint no longer uses docs_base: its em dash check covers every
+    # tracked Markdown line. The value is still computed here because the
+    # workflow still passes it. A pull request checkout is GitHub's merge of
+    # the head into the base branch, whose first parent can be newer than the
+    # event's base.
     merge_base_side = (
         merge_first_parent(checkout, head) if event_name == "pull_request" else None
     )
