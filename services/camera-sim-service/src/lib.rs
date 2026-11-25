@@ -5292,6 +5292,86 @@ properties:
     }
 
     #[tokio::test]
+    async fn scoped_transaction_id_fault_keeps_standard_data_ids() {
+        let (req, _) = data_reply(7);
+        let reply = Reply::DataStream {
+            source: ByteSource::Memory(vec![0xaa, 0xbb]),
+            response: ptp_core::OperationResponse {
+                code: resp::OK,
+                transaction_id: 7,
+                params: Vec::new(),
+            },
+            completion: None,
+        };
+        let mut delivered = Vec::new();
+        let written = write_reply(
+            &mut delivered,
+            &req,
+            reply,
+            WireFraming::Standard,
+            &WirePlan::ReplaceTransactionId {
+                transaction_id: 99,
+                stage: Some(DataOrResponse::Response),
+            },
+            &Metrics::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(written.wire_outcome, Some("replacedResponseTransactionId"));
+        assert!(matches!(
+            PtpIpPacket::decode(&delivered[..20]).unwrap(),
+            PtpIpPacket::StartData(data) if data.transaction_id == 7
+        ));
+        assert!(matches!(
+            PtpIpPacket::decode(&delivered[20..34]).unwrap(),
+            PtpIpPacket::EndData(data) if data.transaction_id == 7
+        ));
+        assert!(matches!(
+            PtpIpPacket::decode(&delivered[34..]).unwrap(),
+            PtpIpPacket::OperationResponse(response) if response.transaction_id == 99
+        ));
+    }
+
+    #[tokio::test]
+    async fn scoped_transaction_id_fault_reports_absent_phases() {
+        let (req, _) = data_reply(7);
+        let mut delivered = Vec::new();
+        let written = write_reply(
+            &mut delivered,
+            &req,
+            Reply::Response(ptp_core::OperationResponse {
+                code: resp::OK,
+                transaction_id: 7,
+                params: Vec::new(),
+            }),
+            WireFraming::Compressed,
+            &WirePlan::ReplaceTransactionId {
+                transaction_id: 99,
+                stage: Some(DataOrResponse::Data),
+            },
+            &Metrics::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(written.wire_outcome, Some("noDataPhase"));
+        assert!(matches!(
+            fuji_framing::decode(&delivered).unwrap(),
+            PtpIpPacket::OperationResponse(response) if response.transaction_id == 7
+        ));
+
+        for (stage, marker) in [
+            (Some(DataOrResponse::Response), "noResponsePhase"),
+            (None, "noWirePhase"),
+        ] {
+            let plan = WirePlan::ReplaceTransactionId {
+                transaction_id: 99,
+                stage,
+            };
+            assert_eq!(applied_wire_outcome(&plan, false, false), Some(marker));
+        }
+    }
+
+    #[tokio::test]
     async fn no_fault_keeps_engine_response_transaction_ids_for_data_replies() {
         let req = OperationRequest {
             data_phase_info: 1,

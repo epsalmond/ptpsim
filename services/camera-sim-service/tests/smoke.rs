@@ -2085,6 +2085,40 @@ fn suppress_fault_omits_only_the_selected_data_or_response_phase() {
 }
 
 #[test]
+fn suppress_response_fault_reports_withheld_response_only_reply() {
+    with_fault_service(|command, control| {
+        let id = install_fault(
+            control,
+            serde_json::json!({
+                "operation":"0x1002",
+                "count":1,
+                "mutation":{"type":"suppress","stage":"response"}
+            }),
+        );
+        let mut stream = connect_ptpip(command, "suppress-open-session");
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_millis(100)))
+            .unwrap();
+        write_frame(&mut stream, &op(0x1002, 1, vec![1]));
+        assert_read_timeout(&mut stream);
+
+        let trace = trace_json(control);
+        let events: Vec<_> = trace["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["fault_id"] == id)
+            .collect();
+        assert_eq!(events.len(), 1);
+        let event = events[0];
+        assert_eq!(event["kind"], "ptpip.fault.applied");
+        assert_eq!(event["operation"], "0x1002");
+        assert_eq!(event["applied"], "suppressedResponse");
+        assert!(event.get("response_code").is_none());
+    });
+}
+
+#[test]
 fn truncate_data_fault_delivers_a_short_but_framed_payload() {
     with_fault_service(|command, control| {
         install_fault(

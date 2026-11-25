@@ -1144,6 +1144,8 @@ The mutation grammar is vendor-neutral:
 
 Poll live view renders fixture data before reply payload mutations and phase
 suppression. The rule still selects the manifest-declared command operation.
+Response-only replies report `suppressedResponse` when the rule withholds
+their response.
 
 Each applied rule adds one `ptpip.fault.applied` event to `/trace` with the
 operation, request transaction ID, response code when emitted, fault ID and
