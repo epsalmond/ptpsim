@@ -1,10 +1,10 @@
 ---
-description: Baseline architecture of ptpsim — the manifest-driven camera-protocol simulator — purpose, the central observation loop, the generic engine, and the transport/mode matrix.
+description: Baseline architecture of ptpsim, the manifest-driven camera-protocol simulator: purpose, the central observation loop, the generic engine, and the transport/mode matrix.
 status: reference
 read-when: Making architecture-level decisions or needing the system-wide picture of how engine, manifests, and transports fit together.
 ---
 
-# ptpsim — Camera Protocol Simulator
+# ptpsim: Camera Protocol Simulator
 
 client application is its first consumer and replaces its current C `vcam` with it; ptpsim
 itself is intended to be published as an open-source project, generic across
@@ -29,7 +29,7 @@ Fuji reference app/GFX100 II is the first target. Nikon (and RED, now Nikon-owne
 next, then Canon; other manufacturers should fit without changing the core
 architecture.
 
-ptpsim is not only a fake camera for App Review — it is a protocol-exploration
+ptpsim is not only a fake camera for App Review; it is a protocol-exploration
 platform for unlocking behavior vendors never exposed. The origin goal was
 extracting IMU/gyro data for gyroflow stabilization; that is a probe-and-
 understand problem, and it is why observation intake is part of the shipping
@@ -46,7 +46,7 @@ simulator can then reproduce and any client can build on.
   manifests and scenario files.
 - Treat discovery and connection setup as first-class, per-model data. Cameras
   routinely use port-knocking, SSDP-like discovery, and connections orchestrated
-  across multiple ports — and the mechanics vary by model, firmware, and mode.
+  across multiple ports, and the mechanics vary by model, firmware, and mode.
   This is why a transport is defined by how a connection comes into being, not
   just by a port number (see Transport And Mode Matrix).
 - Treat scripts as product surface. Every useful simulator action must be
@@ -69,7 +69,7 @@ simulator can then reproduce and any client can build on.
 - Redistributability is a contributor rule, not a private/public split. Golden
   packets and manifests get a redaction pass (serials, device GUIDs, network
   identifiers); media and firmware fixtures must be synthetic or licensed for
-  redistribution — never copyrighted vendor payloads.
+  redistribution, never copyrighted vendor payloads.
 - Evidence is provenance, never a load-time dependency. A manifest must validate
   and run with `evidence:` ids unresolved. Prefer citing redistributable sources
   (wire captures, public specs) so a public manifest is self-justifying; only
@@ -316,7 +316,7 @@ first publish.
 
 Public vs private boundary:
 
-- Public (ptpsim repo): everything that is the simulator — engine crates, the
+- Public (ptpsim repo): everything that is the simulator, meaning the engine crates, the
   generic `camera-sim` + `protocol-primitives`, manifest schema, probe tooling,
   service and CLI, and the captured camera manifests, captures, and
   redistributable fixtures. Model-specific behavior lives in manifest data, not
@@ -332,18 +332,18 @@ fixtures are synthetic or redistribution-licensed. Captured manifests and
 contributions are data; pick a license (e.g. CC-BY or the project license for
 data) and a contribution agreement before the first external probe lands.
 
-Operating model — one engine, three consumer seams:
+Operating model: one engine, three consumer seams.
 
 ptpsim is the single home for camera behavior. Everything downstream is a
-consumer of a published artifact — never a fork, never a sibling
+consumer of a published artifact, never a fork, never a sibling
 implementation.
 
 - **Apps** consume the FFI: vendored bindings + manifests per platform
   (Swift via the Apple FFI releases, Kotlin via the Android/Linux targets).
-- **Hosted simulators** consume the container image — the publishable
+- **Hosted simulators** consume the container image: the publishable
   `camera-sim-service` artifact #247 defines, with `/healthz`, the control
-  endpoint, and mountable startup-state YAML. A deployment — e.g. a hosted
-  review/demo camera pool — is configuration around that image, pinned by
+  endpoint, and mountable startup-state YAML. A deployment (e.g. a hosted
+  review/demo camera pool) is configuration around that image, pinned by
   digest, never a patched build.
 - **Protocol discovery** consumes the crates themselves: probing a real camera
   runs through the headless initiator built on the shipping engine and
@@ -355,7 +355,7 @@ implementation.
 Two standing rules fall out of this:
 
 1. **Upstream-first.** When a consumer needs camera behavior the engine lacks,
-   the fix is a consumer-neutral engine/manifest feature here — not a
+   the fix is a consumer-neutral engine/manifest feature here, not a
    workaround in the consumer. Consumers pick behavior from manifest traits;
    a camera-specific branch in a consumer is a bug in this repo.
 2. **Probe work lands here first.** Any "drive a real camera to learn what it
@@ -438,7 +438,7 @@ irreducible non-data code lives in `protocol-primitives`, organized by concern.
 Responsibilities:
 
 - Runtime engine for responder sessions (reference app session startup/init-ack,
-  three-socket model, image-import, live-view, camera-controls, firmware) — all
+  three-socket model, image-import, live-view, camera-controls, firmware), all
   driven by the manifest, none brand-hardwired.
 - A **manifest state-machine interpreter** that runs the `workflows` transition
   tables. Workflow states/gates are data; the interpreter is generic.
@@ -464,7 +464,7 @@ Operation dispatch behaviors form a separate closed vocabulary (`handler:`, see
 MANIFEST_SCHEMA.md §11.18):
 
 - Wire framing transforms beyond `ptp-core`'s vanilla codec (e.g. Fuji's
-  compressed framing, later Canon EOS events) — peers in one codec registry.
+  compressed framing, later Canon EOS events), peers in one codec registry.
 - Live-view frame packetization (wrapping a JPEG in a vendor frame header).
 - Connection-establishment strategies (BLE-opened / UDP-knock / direct-bind).
 - Computed quirks where a value is assembled/derived, not looked up (e.g. the
@@ -473,7 +473,7 @@ MANIFEST_SCHEMA.md §11.18):
 Adding a camera/manufacturer is a manifest + captures; a new entry here is needed
 only for a genuinely new wire format or computed quirk, and it lands as a peer
 available to all, not in a per-brand crate. Do not push procedural quirks into a
-declarative DSL — data selects and parameterizes; these primitives implement.
+declarative DSL. Data selects and parameterizes; these primitives implement.
 
 ### Shipping initiator and observation recorder
 
@@ -770,7 +770,7 @@ The simulator service is a Rust binary using `tokio`.
 Responsibilities:
 
 - Run one simulator instance from a profile and bind addresses given at startup.
-- Listen on IPv6 (required — the Apple App Review network is NAT64/IPv6-only, so
+- Listen on IPv6 (required: the Apple App Review network is NAT64/IPv6-only, so
   review instances are reached over raw IPv6), optionally IPv4 for lab/dev.
 - Expose PTP/IP camera ports directly.
 - Expose a local/admin HTTP API for health and control.
@@ -1013,7 +1013,7 @@ camera-initiator \
   --param terminalName=probe-host \
   entry --to image-transfer
 
-# PLANNED (not implemented yet — paper shape for the script surface):
+# PLANNED (not implemented yet; paper shape for the script surface):
 camera-simctl script run scenarios/fuji/image-import-happy.yaml
 ```
 
@@ -1158,7 +1158,7 @@ FFI-backed Rust queries.
 ### Intent → mechanism resolution
 
 This is why the app consumes manifests at all. The app expresses **intent on a
-named control** — `aperture.stepNarrower()`, `iso.set(800)`, tap-to-focus — never
+named control** (`aperture.stepNarrower()`, `iso.set(800)`, tap-to-focus), never
 a raw opcode. The manifest resolves that intent to the concrete mechanism for the
 connected camera's `(model, firmware, transport, mode, state)`: which operation
 code, set method (absolute vs vendor step), value encoding, readback property,
@@ -1167,7 +1167,7 @@ and whether the action is even legal right now.
 The aperture entry is the canonical example: the same `aperture.stepNarrower()`
 becomes vendor-step `0x902d` with a `0xd212` readback in live-view mode, and an
 absolute `0x1016` set over tether. The app code path does not change; the
-resolution does. This is the payoff of making behavior data — one app stays
+resolution does. This is the payoff of making behavior data: one app stays
 correct across models, firmwares, transports, and modes.
 
 Two delivery channels for that resolution:
@@ -1292,23 +1292,23 @@ Phase 2b: PTP/USB and its modes.
 
 - USB is one link with several mutually distinct modes the camera gates
   differently: RAW conversion, backup/restore, USB webcam, and plain PTP image
-  access. See "Transport And Mode Matrix" — each mode is manifest data.
+  access. See "Transport And Mode Matrix"; each mode is manifest data.
 - `http` (the camera's embedded webserver, previously called XLV): a top
-  exploration target for GFX100 II — it may be where the no-op-seeming live-view
+  exploration target for GFX100 II. It may be where the no-op-seeming live-view
   size properties are actually real. Opportunistic, not blocking, but high-value.
 
 Phase 3: Other manufacturers.
 
-- Nikon next (and RED, which Nikon now owns) — their app/tooling situation is the
+- Nikon next (and RED, which Nikon now owns): their app/tooling situation is the
   kind of gap ptpsim exists to close. Then Canon PTP/IP/EOS.
 - Each manufacturer is a manifest + captures, run by the same generic engine. New
   code only for a genuinely new wire format (→ `ptp-core`) or computed quirk (→
-  `protocol-primitives`), added as a shared peer — never a per-manufacturer crate.
+  `protocol-primitives`), added as a shared peer, never a per-manufacturer crate.
 - Shared media store and manifest pipeline reused unchanged. (Manufacturers have
-  proprietary RAW formats — handled as media-store format entries, still data.)
+  proprietary RAW formats, handled as media-store format entries, still data.)
 
 Paper designs for the next transports (PTP/USB + modes, XLV HTTP/HTTPS, wireless
-tether) live in [`docs/TRANSPORTS.md`](docs/TRANSPORTS.md) — each lands as an
+tether) live in [`docs/TRANSPORTS.md`](docs/TRANSPORTS.md); each lands as an
 adapter + manifest data, with the core crates unchanged.
 
 BLE discovery and pairing emulation is in scope as a data-driven transport,
@@ -1322,21 +1322,21 @@ manifest data or labelled test scripts ([`docs/TRANSPORTS.md`](docs/TRANSPORTS.m
 What operations and properties a camera allows is not a function of
 `(model, firmware)` alone. It is a function of
 `(model, firmware, transport, mode, state)`, and the gating is frequently
-arbitrary — one mode forbids an operation a sibling mode allows, with no
+arbitrary: one mode forbids an operation a sibling mode allows, with no
 underlying rule. This is the central reason behavior must be data: there is
 nothing to encode but a lookup table.
 
 Observed transports and modes for Fuji:
 
-- `app` — Wi-Fi app protocol (three sockets; live view + image import).
-- `ptpip` — PTP/IP command session (PCSS tether path).
-- `usb` — PTP over USB, one link with several mutually exclusive modes:
+- `app`: Wi-Fi app protocol (three sockets; live view + image import).
+- `ptpip`: PTP/IP command session (PCSS tether path).
+- `usb`: PTP over USB, one link with several mutually exclusive modes:
   - `usb/raw-conversion` (note: still allows some camera ops that make no sense
-    in this mode — cross-mode bleed is real and must be captured, not assumed)
+    in this mode; cross-mode bleed is real and must be captured, not assumed)
   - `usb/backup-restore`
   - `usb/webcam`
   - `usb/image` (plain PTP object access)
-- `http` (was "XLV") — the camera's embedded HTTP webserver. Reportedly serves
+- `http` (was "XLV"): the camera's embedded HTTP webserver. Reportedly serves
   up to 4 connected cameras, and is a candidate for activating the live-view
   size properties that appear named for that purpose but no-op over other
   transports. Top exploration target for GFX100 II.
@@ -1349,7 +1349,7 @@ is stronger than a support matrix. Two things resolve against the full
   being*, not by being TCP. Some ports are opened by BLE, some by UDP knock,
   some by direct bind. A "TCP connection" reached through a BLE-opened port is
   not interchangeable with one reached through a knock. The transport spec owns
-  the establishment mechanism per mode — the lower comms layer being OS
+  the establishment mechanism per mode. The lower comms layer being OS
   pass-through does not make it absent from the model; it reaches through.
 - **Operation semantics.** The same opcode can *mean different things* in
   different engaged modes, not merely be allowed or denied. Workflow handlers
@@ -1360,7 +1360,7 @@ is stronger than a support matrix. Two things resolve against the full
 Explicitly not modeled: Wi-Fi AP vs infrastructure. The OS handles it and it is
 pass-through *and the protocol behaves identically*, so it does not exist here.
 (Contrast the modes above, where the lower layer is also pass-through but the
-camera's behavior is not — those must be modeled.)
+camera's behavior is not; those must be modeled.)
 
 This matrix is also an observation target: initiator runs preserve exact
 `(manufacturer, transport, mode, state)` tuples, so “what does this camera
@@ -1691,7 +1691,7 @@ The tethered-shooting product target is higher:
   client application's management sidecar, which builds pool inventory by polling
   `/healthz`. A management sidecar talking to NATS is acceptable; it is not part
   of ptpsim.
-- Open-source boundary: the whole simulator is public — engine, schema, probe,
+- Open-source boundary: the whole simulator is public. That covers engine, schema, probe,
   service, CLI, and captured manifests, redacted golden packets, and fixtures.
   Only a consumer's app, backend, and management sidecar stay private. Evidence
   is provenance only: manifests must load and run with it unresolved; golden
@@ -1709,7 +1709,7 @@ The tethered-shooting product target is higher:
   (fuzzing) → `ram` → `firmware-supported` → `firmware-unlocked`, each a louder
   opt-in, all above `safe` under use-at-your-own-risk/no-warranty. The factory-
   reset opcode is denylisted so a blind sweep can never fire it.
-- Transport + mode: not just availability — *connection establishment* (BLE- vs
+- Transport + mode: not just availability. *Connection establishment* (BLE- vs
   knock- vs direct-opened) and *operation semantics* resolve against
   `(model, firmware, transport, mode, state)`. Same opcode can mean different
   things per mode; ops bleed across modes. `mode` is a first-class manifest axis
@@ -1741,7 +1741,7 @@ The tethered-shooting product target is higher:
 - Firmware-mode probing can damage the test camera itself, not just risk users.
   Firmware experiments (supported and unlocked paths) have already left a GFX100
   II in a state where the upgrade cycle will not complete, which blocks reaching
-  fw 2.40 — the firmware most of the GFX fleet now runs and the version we most
+  fw 2.40, the firmware most of the GFX fleet now runs and the version we most
   need a clean manifest for. Mitigation: keep firmware tiers strictly opt-in and
   off the default sweep; preserve at least one known-good camera on the target
   firmware for capture; treat captures as the durable asset so a bricked or

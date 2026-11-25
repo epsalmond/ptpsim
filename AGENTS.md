@@ -17,14 +17,14 @@ standalone mapper toolkit is archived). Dual-licensed MIT OR Apache-2.0.
 Full design: [`DESIGN.md`](DESIGN.md). Consumer-facing FFI surface and
 verb grammar: [`docs/INTEGRATION.md`](docs/INTEGRATION.md). Manifest
 schema authority: [`docs/MANIFEST_SCHEMA.md`](docs/MANIFEST_SCHEMA.md)
-(the "contract tiebreaker" — when the code and other docs disagree,
+(the "contract tiebreaker": when the code and other docs disagree,
 it wins; its §11.x numbering is historical).
 
 ## Working conventions
 
-### Open-source hygiene — nothing private lands here
+### Open-source hygiene: nothing private lands here
 
-This is a public repo. Repo content — docs, code comments, CI config, fixtures —
+This is a public repo. Repo content (docs, code comments, CI config, fixtures)
 must stand alone for an outside contributor with no access to the authors'
 machines. Never add:
 
@@ -41,7 +41,7 @@ machines. Never add:
 
 The test: would the line make sense on a stranger's laptop? If not, it belongs
 in the consumer's repo or a private tree. Existing violations are tracked
-(#255, #160, #259) — do not add new ones while those burn down.
+(#255, #160, #259); do not add new ones while those burn down.
 
 ### Prose register
 
@@ -58,7 +58,7 @@ as a fact. Applies to new and edited prose in docs, PR bodies, issues, and
 code comments. Clean up an existing violation when editing that text anyway;
 do not sweep-rewrite otherwise-untouched prose to conform.
 
-### Work tracking — GitHub issues, not in-process task lists
+### Work tracking: GitHub issues, not in-process task lists
 
 **Work is tracked as GitHub issues.** Agent in-process task lists
 
@@ -67,28 +67,28 @@ remembering across sessions goes in `gh` so it's discoverable from
 `gh issue list`.
 
 This means: when you surface a follow-up, a deferred fix, or a "we should do X
-later" — file an issue. An actionable finding against an open pull request is
+later", file an issue. An actionable finding against an open pull request is
 tracked first as a durable PR review thread under the workflow below; if it is
 deferred from that PR, create an issue and link it before resolving the thread.
 The in-process list is for *this turn's* working memory, not the project
 backlog.
 
-**Priority labels:** `priority:P1` — on the active release or program critical
-path, pick these up first; `priority:P2` — consumers hit it soon, schedule next;
-`ready` — implementable without new protocol evidence;
-`needs:protocol-evidence` — implementation is blocked on protocol or camera
-behavior evidence; unlabeled — backlog. `ready` and
+**Priority labels:** `priority:P1`: on the active release or program critical
+path, pick these up first; `priority:P2`: consumers hit it soon, schedule next;
+`ready`: implementable without new protocol evidence;
+`needs:protocol-evidence`: implementation is blocked on protocol or camera
+behavior evidence; unlabeled: backlog. `ready` and
 `needs:protocol-evidence` are mutually exclusive on one implementation issue.
 Split nonblocking unknowns into their own evidence issue instead of carrying
 both labels.
 
-### SDLC — worktree → branch → PR, review, merge
+### SDLC: worktree → branch → PR, review, merge
 
 1. **One agent session per worktree**, so sessions don't collide:
    `git worktree add ~/git/ptpsim-<slug> -b <branch>` off `main`. It's
-   yours alone — multiple branches/PRs in it are fine, never a shared
+   yours alone. Multiple branches/PRs in it are fine, never a shared
    checkout. `git worktree remove` when done. Do this **before your first
-   edit**, not at commit time — never work in `~/git/ptpsim` itself.
+   edit**, not at commit time. Never work in `~/git/ptpsim` itself.
    Enforced by `scripts/git-hooks/pre-commit` (blocks commits on `main`
    and in the primary checkout) and `scripts/git-hooks/commit-msg` (checks the
    finalized commit message). Activate both once per clone with
@@ -105,7 +105,7 @@ both labels.
 
    review-thread workflow below.
 4. **Single-line commit messages.** Imperative (`Add logging for X`), no
-   body. The *why* goes in the PR description — or a durable `docs/*.md` if
+   body. The *why* goes in the PR description, or a durable `docs/*.md` if
    it's load-bearing past the merge. Commits should not have "and."
 5. **Push the branch, mark the PR ready, then merge it directly.** GitHub
    auto-merge is disabled on this repository. Branch protection on `main`
@@ -115,22 +115,22 @@ both labels.
    those gates.
 6. **Write the PR for a human:** what was done and why it matters, in prose
    a reviewer follows. No opcode/method dumps or
-   change-by-change logs — reviewers can read the code for that. Shorter is easier to
+   change-by-change logs; reviewers can read the code for that. Shorter is easier to
    reason about.
 7. **Never** force-push, `git reset --hard` shared refs, amend published
-   commits, or use `--no-verify`. A failing hook is signal — fix the cause.
+   commits, or use `--no-verify`. A failing hook is signal: fix the cause.
 
 Documentation SHOULD precede the code change, not follow it.
 
 Run the workspace checks (*Build + test*) before pushing.
 
-### Code review — durable PR threads, bounded fixes
+### Code review: durable PR threads, bounded fixes
 
 Review state lives on the pull request, not in agent chat or an in-process
 task list; a finding that exists only in chat does not count as review state.
-The full workflow — pinning the review to a SHA, durable thread triage,
+The full workflow (pinning the review to a SHA, durable thread triage,
 narrow fix delegation, delta reviews, and the readiness gates that end in the
-owning agent merging its own PR — is
+owning agent merging its own PR) is
 [`docs/CODE_REVIEW_WORKFLOW.md`](docs/CODE_REVIEW_WORKFLOW.md). Read it
 before running or remediating a `/code-review` pass, and when resuming a PR
 after context loss (resume from PR state, not chat).
@@ -210,7 +210,7 @@ Memory note expanding on this: `feedback-eager-schema-cleanup-preproduction`.
 
 - **Manifest data** lives in `packages/camera-config-data/`. Authored by
   people, proposed from `camera-observation/v1` runs, and reviewed before
-  merge. Agents don't hand-author YAML manifests — they can edit small curated
+  merge. Agents don't hand-author YAML manifests; they can edit small curated
   entries (gatt catalog additions, establishment-step ordering), but bulk data
   flows through `camera-config-generate propose` → digest-bound review →
   `camera-config-generate apply`. The archived standalone mapper is historical
@@ -252,11 +252,11 @@ When sources disagree about a protocol fact:
 
 ## Bootstrap on a clean start
 
-1. **Create a worktree before touching anything** —
+1. **Create a worktree before touching anything:**
    `git worktree add ~/git/ptpsim-<slug> -b <branch>` (SDLC above). The
    primary checkout is read-only for agents; the pre-commit hook rejects
    commits made there.
-2. **Evaluate the host you're on — don't assume it from a doc.**
+2. **Evaluate the host you're on; don't assume it from a doc.**
    Sessions run on different Linux and macOS machines. Check the platform your
    harness reports before relying on
    host-specific paths, tools, or capabilities; static host facts
@@ -267,7 +267,7 @@ When sources disagree about a protocol fact:
 4. **Check** `gh issue list` for open work. Pending operational tasks
    (CI, correctness, follow-ups) are filed there; this is the project
    backlog.
-5. **Skim** the last 10 entries of `git log --oneline` — recent commits
+5. **Skim** the last 10 entries of `git log --oneline`. Recent commits
    are the highest-fidelity record of what just changed and why.
 6. **Don't** trust any old `RESUME.md`, `resume.sh`, or similar
    session-state file. The one that existed has been deleted; if a new
@@ -275,7 +275,7 @@ When sources disagree about a protocol fact:
 
 ## What's outside ptpsim's scope
 
-- iOS app UI / lifecycle — that's the consumer (client application). ptpsim's
+- iOS app UI / lifecycle: that's the consumer (client application). ptpsim's
   obligation ends at the FFI surface.
 
   its owning system and surfaced here only as public-safe manifest data,
