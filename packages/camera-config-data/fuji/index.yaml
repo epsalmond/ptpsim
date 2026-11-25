@@ -576,8 +576,8 @@ families:
         # Which event ends the camera's pairing screen is unknown (#355), so no
         # step is marked `confirms: registration` and a completed walk does not
         # show that the camera accepted the registration. A read or CCCD error
-        # does not stop the app's registration, so those steps are tolerant
-        # unless a comment gives the reason they are strict.
+        # callback does not stop the app's registration, so those steps are
+        # tolerant unless a comment gives the reason they are strict.
         legacy-app-pair:
           mechanism: legacy-app-pair
           persist: [pairingKeyBytes, style, shortSerial, cameraSerial, ssid]
@@ -627,7 +627,11 @@ families:
             - bleRead: { gatt: movieButton, encoding: bytes, captureAs: movieButton, tolerant: true }
             - bleRead: { gatt: cameraBleProtocolVersion, encoding: u16-le, captureAs: cameraBleProtocolVersion, tolerant: true }
             - bleSubscribe: { gatt: cameraSSIDNameString, timeoutMs: 3000, mode: indicate, tolerant: true }
-            - bleSubscribe: { gatt: apState, timeoutMs: 3000, mode: indicate, tolerant: true }
+            # Strict, unlike a single CCCD in the app: the app never marks the
+            # link ready when the remaining CCCD writes all fail. A tolerant
+            # step cannot express that, so this one keeps a walk from
+            # completing on a dropped link.
+            - bleSubscribe: { gatt: apState, timeoutMs: 3000, mode: indicate }
             - bleSubscribe: { gatt: transferState, timeoutMs: 3000, mode: indicate, tolerant: true }
             - bleSubscribe: { gatt: dateSyncState, timeoutMs: 3000, mode: notify, tolerant: true }
             - bleSubscribe: { gatt: locationSyncState, timeoutMs: 3000, mode: notify, tolerant: true }
