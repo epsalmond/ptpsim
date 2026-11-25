@@ -667,12 +667,28 @@ families:
               interactionRequired: false
               executorSpan: { sequence: steps, startStep: 0, endStepExclusive: 6 }
           steps:
+            # The legacy vendor mobile app writes the launch on the open
+            # registration link and adds no subscribe. This plan connects,
+            # discovers, and subscribes first so it can run on its own; on an
+            # open link the first two steps are checkpoints, and the subscribe
+            # rewrites the AP-state CCCD.
             - bleConnect: {}
             - bleDiscoverServices: {}
             - bleSubscribe: { gatt: apState, timeoutMs: 3000, mode: indicate }
             - bleWrite:
                 gatt: functionLaunchRequest
                 value: { runtime: launchMode, encoding: u16-le }
+            # AP state is a u16-le. The app reads it as 0 not launched or
+            # failed, 1 launched and connectable, 2 launching, and 3 reserved
+            # or automatic transfer (the launch ends as not connectable).
+            # The app waits for an AP-state indication with no timeout. This
+            # plan polls by read instead, because two indication waits on an
+            # X-A7 received nothing while reads worked (#412). One read cannot
+            # tell "not launched yet" from "launch failed", so 0 keeps the poll
+            # waiting, as 2 does; 3 ends the walk with ConditionRejected. The
+            # 1000 ms interval and 45000 ms timeout are client policy. The poll
+            # is unverified on hardware: its one recorded run timed out with no
+            # AP-state change (#355).
             - bleAwaitUntil:
                 source: { read: apState }
                 capture: { at: 0, length: 2, encoding: u16-le, name: apState }
