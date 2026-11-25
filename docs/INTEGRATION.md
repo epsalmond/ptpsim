@@ -404,7 +404,8 @@ state changes only the simulator's responses to the operations the manifest list
 it. States are not part of the FFI surface. The executor reports the resulting
 failure like any other PTP failure, unless the action declares a failure condition
 for it (`MANIFEST_SCHEMA.md` §11.33; see "PTP failure conditions" below). The GFX100 II
-`enumerateObjects` action declares one for the empty slot 1 response.
+`enumerateObjects` and `importObjects` actions both declare one for the empty slot 1
+response, because both run the same page-selection step that the camera refuses.
 
 `POST /control/advance-property` accepts a property code such as
 `{"code":"0x500D"}`. It advances the current value by one position in the loaded
