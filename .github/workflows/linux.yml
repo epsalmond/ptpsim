@@ -83,8 +83,8 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - run: scripts/lint-docs.sh --self-test
-      # The em dash check reads only lines added since DOCS_BASE. Without one
-      # (unavailable history), the script falls back to origin/main.
+      # The em dash check covers every tracked Markdown line. The script still
+      # accepts --base for compatibility with this call, then ignores it.
       - run: scripts/lint-docs.sh ${DOCS_BASE:+--base "$DOCS_BASE"}
         env:
           DOCS_BASE: ${{ needs.changes.outputs.docs_base }}

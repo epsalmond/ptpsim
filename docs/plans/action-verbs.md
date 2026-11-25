@@ -269,4 +269,4 @@ This is *not* control flow in the engine sense. It's a **Recipe**. Same
 sans-io model: client owns control flow; manifest declares bytes AND
 post-conditions.
 
-Signed: ptpsim
+ptpsim

@@ -55,8 +55,10 @@ rhetorical slogan shape; ordinary contrast that states a fact ("this measures
 X, not Y") is fine, and so are words that record real design intent
 ("deliberately"). Test: if a sentence would fit on a landing page, rewrite it
 as a fact. Applies to new and edited prose in docs, PR bodies, issues, and
-code comments. Clean up an existing violation when editing that text anyway;
-do not sweep-rewrite otherwise-untouched prose to conform.
+code comments. Tracked Markdown carries no em dashes, and
+`scripts/lint-docs.sh` enforces that. For the other tics, clean up an existing
+violation when editing that text anyway; do not sweep-rewrite
+otherwise-untouched prose to conform.
 
 ### Work tracking: GitHub issues, not in-process task lists
 
@@ -143,7 +145,8 @@ slogans. Avoid copywriting tics: epigram headlines, antithesis frames ("it's
 not X, it's Y"), tricolons ("one engine, no forks, all data"), and
 mirror-clause endings. Avoid em dashes: use commas, colons, parentheses, or
 two sentences. If a sentence would fit on a landing page, rewrite it as a
-fact. Applies to new and edited prose: existing text predates this rule, so
+fact. Applies to new and edited prose. Tracked Markdown carries no em dashes,
+and the docs lint enforces that. Other existing text predates these rules, so
 fix it when you touch it rather than sweeping.
 
 ### Private evidence and operator-only tooling
