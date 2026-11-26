@@ -285,6 +285,47 @@ pub enum PtpFraming {
     Usb,
 }
 
+// Bound the allocation of a host that receives one complete TCP frame.
+const MAX_BUFFERED_PTP_IP_FRAME_BYTES: u32 = 16 * 1024 * 1024;
+
+#[derive(Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum PtpIpFramePrefix {
+    NeedMore { required_bytes: u32 },
+    Ready { total_bytes: u32 },
+}
+
+#[derive(Debug, PartialEq, Eq, thiserror::Error, uniffi::Error)]
+pub enum PtpIpFrameLengthError {
+    #[error("frame declares {declared} bytes, below the minimum of {minimum}")]
+    BelowMinimum { declared: u32, minimum: u32 },
+    #[error("frame declares {declared} bytes, above the maximum of {maximum}")]
+    AboveMaximum { declared: u32, maximum: u32 },
+}
+
+/// Admit one buffered PTP/IP TCP frame using its common length prefix.
+/// The prefix and the returned total count both start at the frame boundary.
+/// Packet layout is validated separately by the complete-frame codec.
+#[uniffi::export]
+pub fn inspect_ptp_ip_frame_prefix(
+    prefix: Vec<u8>,
+) -> Result<PtpIpFramePrefix, PtpIpFrameLengthError> {
+    use ptp_core::error::FrameLengthError;
+    use ptp_core::framing::{stream_frame_length, FRAME_LENGTH_PREFIX_BYTES};
+
+    match stream_frame_length(&prefix, MAX_BUFFERED_PTP_IP_FRAME_BYTES) {
+        Ok(Some(total_bytes)) => Ok(PtpIpFramePrefix::Ready { total_bytes }),
+        Ok(None) => Ok(PtpIpFramePrefix::NeedMore {
+            required_bytes: FRAME_LENGTH_PREFIX_BYTES,
+        }),
+        Err(FrameLengthError::BelowMinimum { declared, minimum }) => {
+            Err(PtpIpFrameLengthError::BelowMinimum { declared, minimum })
+        }
+        Err(FrameLengthError::AboveMaximum { declared, maximum }) => {
+            Err(PtpIpFrameLengthError::AboveMaximum { declared, maximum })
+        }
+    }
+}
+
 pub(crate) fn frame_encode(
     framing: PtpFraming,
     pkt: &ptp_core::PtpIpPacket,

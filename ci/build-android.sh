@@ -36,7 +36,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT_DIR="${OUT_DIR:-${ROOT}/out}"
 PROFILE="${PROFILE:-release}"
 # Set to 1 for the PR seam: generate and compile host Kotlin bindings without
-# building Android native libraries or assembling a release AAR.
+# building Android native libraries or assembling a release AAR. Run the
+# binding fixture against the host native library.
 KOTLIN_BINDINGS_CHECK_ONLY="${KOTLIN_BINDINGS_CHECK_ONLY:-0}"
 SHA8="$(cd "${ROOT}" && git rev-parse --short=8 HEAD 2>/dev/null || echo dev)"
 
@@ -208,11 +209,14 @@ CLASSES_JAR="${ANDROID_DIR}/classes.jar"
 KOTLINC_CP="${JNA_JAR}:${KOTLINX_COROUTINES_JAR}${ANDROID_JAR:+:${ANDROID_JAR}}"
 
 if [[ "${KOTLIN_BINDINGS_CHECK_ONLY}" == 1 ]]; then
+    require java
     CHECK_JAR="${ANDROID_DIR}/kotlin-bindings-check.jar"
     STUB="${ROOT}/ci/kotlin/ExecutorBindingsStub.kt"
     test -f "${STUB}" || { echo "FATAL: ${STUB} not found" >&2; exit 1; }
-    kotlinc "${KOTLIN_FILE}" "${STUB}" -classpath "${KOTLINC_CP}" -d "${CHECK_JAR}"
+    kotlinc "${KOTLIN_FILE}" "${STUB}" -classpath "${KOTLINC_CP}" -include-runtime -d "${CHECK_JAR}"
     test -f "${CHECK_JAR}" || { echo "FATAL: kotlinc did not produce ${CHECK_JAR}" >&2; exit 1; }
+    java "-Djna.library.path=${HOST_LIB%/*}" -classpath "${CHECK_JAR}:${KOTLINC_CP}" \
+        ptpsim.ci.ExecutorBindingsStubKt
     echo "Kotlin executor binding check complete: ${CHECK_JAR}"
     exit 0
 fi

@@ -14,6 +14,11 @@ import dev.ptpsim.cameraprotocol.ExecutorException
 import dev.ptpsim.cameraprotocol.ExecutorStepFailureKind
 import dev.ptpsim.cameraprotocol.Predicate
 import dev.ptpsim.cameraprotocol.PredicateOp
+import dev.ptpsim.cameraprotocol.PtpIpFrameLengthException
+import dev.ptpsim.cameraprotocol.PtpIpFramePrefix
+import dev.ptpsim.cameraprotocol.PtpFraming
+import dev.ptpsim.cameraprotocol.buildCommand
+import dev.ptpsim.cameraprotocol.inspectPtpIpFramePrefix
 import dev.ptpsim.cameraprotocol.PtpExecutorTransport
 import dev.ptpsim.cameraprotocol.PtpSessionOpenResult
 import dev.ptpsim.cameraprotocol.SocketRole
@@ -133,3 +138,16 @@ fun retryBindingShape(): Step = Step.Retry(
     retryDelayMs = 200u,
     failureContext = listOf("detail"),
 )
+
+fun main() {
+    val prefix = inspectPtpIpFramePrefix(byteArrayOf()) as PtpIpFramePrefix.NeedMore
+    val requiredBytes = prefix.requiredBytes.toInt()
+    val command = buildCommand(PtpFraming.STANDARD, 0x1001u.toUShort(), 1u, emptyList())
+    val ready = inspectPtpIpFramePrefix(command.copyOf(requiredBytes)) as PtpIpFramePrefix.Ready
+    check(ready.totalBytes.toInt() == command.size)
+
+    val invalidPrefix = ByteArray(requiredBytes) { 0xff.toByte() }
+    val error = runCatching { inspectPtpIpFramePrefix(invalidPrefix) }.exceptionOrNull()
+    check(error is PtpIpFrameLengthException.AboveMaximum && error.declared == UInt.MAX_VALUE)
+    println("Kotlin stream frame prefix binding check passed")
+}
