@@ -6,7 +6,29 @@
 use crate::codes::PacketType;
 use crate::container::*;
 use crate::datatype::{Reader, Writer};
-use crate::error::{DecodeError, EncodeError};
+use crate::error::{DecodeError, EncodeError, FrameLengthError};
+
+pub const FRAME_LENGTH_PREFIX_BYTES: u32 = 4;
+const MIN_STREAM_FRAME_BYTES: u32 = 8;
+
+/// Read the first frame's declared size from a TCP stream prefix. An
+/// incomplete length field returns `None`. The complete packet decoder
+/// checks its own packet type, header, and body after admission.
+pub fn stream_frame_length(prefix: &[u8], maximum: u32) -> Result<Option<u32>, FrameLengthError> {
+    let Ok(declared) = Reader::new(prefix).u32() else {
+        return Ok(None);
+    };
+    if declared < MIN_STREAM_FRAME_BYTES {
+        return Err(FrameLengthError::BelowMinimum {
+            declared,
+            minimum: MIN_STREAM_FRAME_BYTES,
+        });
+    }
+    if declared > maximum {
+        return Err(FrameLengthError::AboveMaximum { declared, maximum });
+    }
+    Ok(Some(declared))
+}
 
 /// One PTP/IP packet in the standard framing.
 #[derive(Debug, Clone, PartialEq, Eq)]

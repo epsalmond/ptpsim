@@ -23,6 +23,14 @@ pub enum DecodeError {
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
+pub enum FrameLengthError {
+    #[error("frame declares {declared} bytes, below the minimum of {minimum}")]
+    BelowMinimum { declared: u32, minimum: u32 },
+    #[error("frame declares {declared} bytes, above the maximum of {maximum}")]
+    AboveMaximum { declared: u32, maximum: u32 },
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
 pub enum EncodeError {
     #[error("PTP string too long ({0} code units; max 254 incl. terminator)")]
     StringTooLong(usize),

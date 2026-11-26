@@ -1595,6 +1595,14 @@ enum PtpFraming
   case Compressed
   case Usb
 
+enum PtpIpFrameLengthError error
+  case BelowMinimum(declared: u32, minimum: u32)
+  case AboveMaximum(declared: u32, maximum: u32)
+
+enum PtpIpFramePrefix
+  case NeedMore(required_bytes: u32)
+  case Ready(total_bytes: u32)
+
 enum PtpPropForm
   case None
   case Range(min: PtpValue, max: PtpValue, step: PtpValue)
@@ -1925,6 +1933,8 @@ fn decode_init_command_response(packet: Bytes) throws(CodecError) -> InitCommand
 fn encode_value(value: i64, width: ValueWidth) throws(CodecError) -> Bytes
 
 fn index_model_refs(index_yaml: String) throws(ConfigError) -> Vec<IndexModelRef>
+
+fn inspect_buffered_ptp_ip_frame_prefix(prefix: Bytes) throws(PtpIpFrameLengthError) -> PtpIpFramePrefix
 
 fn normalize_client_name(raw: String) -> String
 

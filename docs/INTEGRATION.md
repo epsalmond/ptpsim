@@ -71,6 +71,7 @@ A single `ConfigStore`, built once from the bundled manifest YAML, then queried:
 | `connection_init_retry_policy(connection)` | typed InitFail retry limit, backoff, and selected u32 reason codes. Retry only listed reasons on the same socket; transport failures and unlisted reasons escape that retry loop. On auto PCSS only, first-Init transport unavailability may separately select the one manifest-authorized outer rendezvous recovery. |
 | `pcss_rendezvous(connection)` + `build_pcss_discovery` / `parse_pcss_notify` / `build_pcss_callback_ack` / `build_pcss_init` | typed discovery-target, callback/knock, expected camera identity, and retry policy plus byte-exact PCSS packet codecs. The host supplies the route-selected local IPv4 address, initiator GUID, and friendly name. The camera may keep its callback TCP socket open: stop after receiving the rendezvous record's exact manifest-rendered terminator bytes, including the final CRLF, then pass the accumulated payload to `parse_pcss_notify`. `NOTIFY` supplies the camera address and command port; neither is inferred from a captured default. When the rendezvous record supplies `camera_name`, match it to the parsed typed `CAMERANAME` before acknowledging the callback or opening the command endpoint. |
 | `run_pcss_auto_establishment` / `run_pcss_known_address_establishment` | Rust-owned PCSS discovery and establishment. Auto-discovery uses the first recognized broadcast callback directly; when manifest policy permits, an unavailable command endpoint or first Init transport attempt triggers one fresh rendezvous to the learned address by unicast. Known-address establishment starts with explicit unicast. The host implements raw socket I/O through `PcssExecutorTransport`; `next_callback` returns a typed `PcssCallback` containing the TCP peer IPv4 and payload. |
+| `inspect_buffered_ptp_ip_frame_prefix(prefix)` | the required prefix size or the declared frame length for a buffered PTP/IP TCP receive, including init, command, and event frames. A per-frame limit applies before the host reads or allocates the body. |
 | `decode_init_command_response(packet)` | a typed response for canonical standard PTP/IP Ack/InitFail packets and the fixed-width 68-byte PCSS Ack. `Acknowledged.protocol_version` is `Some(version)` for standard Ack and `None` for PCSS, whose wire shape omits that field. The InitFail reason drives manifest-owned retry policy; consumers do not inspect packet-type literals or offsets. |
 | `validate_legacy_app_init_ack(packet, expectedResponderGuid)` | legacy manufacturer app's APK-compatible 68-byte Ack check: exact length/type plus the fixed responder GUID. Bytes after the GUID are intentionally opaque rather than forced through PCSS's camera-name/padding grammar. |
 | `port_for_role(connection, role)` / `socket_bindings(connection)` | the port to bind for a socket role (`command` / `event` / `liveView`); bind by role, not by the Fuji command port + `+1`/`+2` offsets. Equal command/event ports mean both roles share one listener and are demultiplexed by their first standard PTP/IP init packet; do not bind the address twice. `None` = the connection has no such socket (e.g. poll-based `wireless-tether` has no event socket) |
@@ -98,6 +99,18 @@ rows even when both belong to one semantic property.
 
 Byte codecs (build/parse PTP packets, decode datasets, encode values) are exported
 functions. The **G1–G3 set is complete** (see §6).
+
+For a buffered PTP/IP TCP receive, pass an empty prefix to
+`inspect_buffered_ptp_ip_frame_prefix` to get `NeedMore.required_bytes`. Read that
+many bytes from the start of the frame and call again. `Ready.total_bytes`
+includes the prefix and gives the number of bytes to deliver to the
+complete-frame decoder or callback. Keep any surplus bytes for the next
+frame. The call validates the common TCP length field and rejects each frame
+whose declared length exceeds 16 MiB. The complete-frame decoder checks the
+packet layout. For transfers that can exceed this receive limit, including the
+`wholeObject` transfer strategy, use `PtpStreamingTransport` to read the data
+phase into a sink. The complete-frame executor retains its separate data-phase
+limit.
 
 ## 3. Generate bindings (uniffi 0.31, library mode, no UDL)
 
