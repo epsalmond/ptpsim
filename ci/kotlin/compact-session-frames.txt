@@ -1,0 +1,7 @@
+# Constructed compact command frames for the host binding test.
+# The OpenSession request matches packages/camera-config-data/golden/open-session-request.yaml.
+# The remaining rows use the compact codec. Rows alternate request and response.
+10000000010002100100000001000000
+0c0000000300012001000000
+0c0000000100031002000000
+0c0000000300012002000000

@@ -1,0 +1,5 @@
+schema: camera-config/v1
+camera: { manufacturer: Test, model: SessionFixture, firmware: "1" }
+connections:
+  command:
+    commandFraming: compressed

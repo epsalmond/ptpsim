@@ -71,6 +71,7 @@ A single `ConfigStore`, built once from the bundled manifest YAML, then queried:
 | `connection_init_retry_policy(connection)` | typed InitFail retry limit, backoff, and selected u32 reason codes. Retry only listed reasons on the same socket; transport failures and unlisted reasons escape that retry loop. On auto PCSS only, first-Init transport unavailability may separately select the one manifest-authorized outer rendezvous recovery. |
 | `pcss_rendezvous(connection)` + `build_pcss_discovery` / `parse_pcss_notify` / `build_pcss_callback_ack` / `build_pcss_init` | typed discovery-target, callback/knock, expected camera identity, and retry policy plus byte-exact PCSS packet codecs. The host supplies the route-selected local IPv4 address, initiator GUID, and friendly name. The camera may keep its callback TCP socket open: stop after receiving the rendezvous record's exact manifest-rendered terminator bytes, including the final CRLF, then pass the accumulated payload to `parse_pcss_notify`. `NOTIFY` supplies the camera address and command port; neither is inferred from a captured default. When the rendezvous record supplies `camera_name`, match it to the parsed typed `CAMERANAME` before acknowledging the callback or opening the command endpoint. |
 | `run_pcss_auto_establishment` / `run_pcss_known_address_establishment` | Rust-owned PCSS discovery and establishment. Auto-discovery uses the first recognized broadcast callback directly; when manifest policy permits, an unavailable command endpoint or first Init transport attempt triggers one fresh rendezvous to the learned address by unicast. Known-address establishment starts with explicit unicast. The host implements raw socket I/O through `PcssExecutorTransport`; `next_callback` returns a typed `PcssCallback` containing the TCP peer IPv4 and payload. |
+| `open_ptp_ip_session(store, connection, transport)` / `close_ptp_ip_session(store, connection, transport)` | Rust-owned session bootstrap and teardown on a host-owned PTP/IP command socket after Init acknowledgement. |
 | `inspect_buffered_ptp_ip_frame_prefix(prefix)` | the required prefix size or the declared frame length for a buffered PTP/IP TCP receive, including init, command, and event frames. A per-frame limit applies before the host reads or allocates the body. |
 | `decode_init_command_response(packet)` | a typed response for canonical standard PTP/IP Ack/InitFail packets and the fixed-width 68-byte PCSS Ack. `Acknowledged.protocol_version` is `Some(version)` for standard Ack and `None` for PCSS, whose wire shape omits that field. The InitFail reason drives manifest-owned retry policy; consumers do not inspect packet-type literals or offsets. |
 | `validate_legacy_app_init_ack(packet, expectedResponderGuid)` | legacy manufacturer app's APK-compatible 68-byte Ack check: exact length/type plus the fixed responder GUID. Bytes after the GUID are intentionally opaque rather than forced through PCSS's camera-name/padding grammar. |
@@ -705,6 +706,21 @@ is its aggregate budget. A deadline drops the losing foreign future;
 cancelling the whole exported future does the same. Socket reads may therefore
 remain pending indefinitely: consumers must not add a second semantic timeout
 or retry policy around them.
+
+After command initialization, call `open_ptp_ip_session` on the held command
+lane before ordinary transactions. Rust uses the manifest's command framing and
+the native initiator's default session ID. Use the same lane and transaction
+allocator for actions and `close_ptp_ip_session`. Each call reserves one
+transaction ID and returns only after checking a matching OK response. The
+host owns the socket and may send close after acquiring session ownership.
+`SessionAlreadyOpen` is a typed `Rejected` result. Retire the unowned command
+socket and leave the current session with its owner. A fresh connection may
+try again after that owner releases the session.
+
+Both calls use the host clock for a 10-second transaction deadline. Keep the
+command lane exclusive for each call and make the callbacks cancellation-safe.
+Retire the lane after an incomplete or invalid reply, including on timeout or
+cancellation, so a late response cannot reach the next caller.
 
 `standardPtpIp` is the exception whose event channel is part of transport
 initialization rather than a later manifest step. The native initiator sends

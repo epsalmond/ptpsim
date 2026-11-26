@@ -18,13 +18,21 @@ import dev.ptpsim.cameraprotocol.PtpIpFrameLengthException
 import dev.ptpsim.cameraprotocol.PtpIpFramePrefix
 import dev.ptpsim.cameraprotocol.PtpFraming
 import dev.ptpsim.cameraprotocol.buildCommand
+import dev.ptpsim.cameraprotocol.closePtpIpSession
 import dev.ptpsim.cameraprotocol.inspectBufferedPtpIpFramePrefix
+import dev.ptpsim.cameraprotocol.openPtpIpSession
 import dev.ptpsim.cameraprotocol.PtpExecutorTransport
 import dev.ptpsim.cameraprotocol.PtpSessionOpenResult
 import dev.ptpsim.cameraprotocol.SocketRole
 import dev.ptpsim.cameraprotocol.Step
 import dev.ptpsim.cameraprotocol.StepObserver
 import dev.ptpsim.cameraprotocol.StepReport
+import java.io.File
+import java.util.HexFormat
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 
 fun fallbackModelBindingShape(store: ConfigStore, model: String): String {
     val fallback: Boolean? = store.isFallbackModel(model)
@@ -139,7 +147,62 @@ fun retryBindingShape(): Step = Step.Retry(
     failureContext = listOf("detail"),
 )
 
-fun main() {
+private class SessionTransport(private val frames: List<ByteArray>) : PtpExecutorTransport {
+    private val clockStarted = Channel<Unit>(1)
+    private val clockCancelled = Channel<Unit>(1)
+
+    var transactionId = 0u
+        private set
+    var nextFrame = 0
+        private set
+
+    override suspend fun reserveTransactionId(): UInt = ++transactionId
+    override suspend fun sendCommandFrame(frame: ByteArray) {
+        check(frames[nextFrame++].contentEquals(frame))
+    }
+    override suspend fun nextCommandFrame(): ByteArray {
+        clockStarted.receive()
+        return frames[nextFrame++]
+    }
+    override suspend fun nextEventFrame(eventCode: UShort): ByteArray = error("unexpected event read")
+    override suspend fun openChannel(role: SocketRole) = error("unexpected channel open")
+    override suspend fun closeCommandChannel(transportCloseFrame: ByteArray?) =
+        error("unexpected socket close")
+    override suspend fun reopenCommandSession(): PtpSessionOpenResult = error("unexpected reopen")
+    override suspend fun sleep(ms: UInt) {
+        try {
+            clockStarted.send(Unit)
+            awaitCancellation()
+        } finally {
+            clockCancelled.trySend(Unit).getOrThrow()
+        }
+    }
+
+    suspend fun awaitClockCancellation() = clockCancelled.receive()
+}
+
+private fun checkPtpIpSession(root: File) = runBlocking {
+    val fixtures = root.resolve("ci/kotlin")
+    val frames = fixtures.resolve("compact-session-frames.txt").readLines()
+        .filter { it.isNotBlank() && !it.startsWith("#") }
+        .map(HexFormat.of()::parseHex)
+    val transport = SessionTransport(frames)
+    val manifest = fixtures.resolve("session-fixture.yaml").readText()
+    ConfigStore.fromBundle(manifest, null).use { store ->
+        withTimeout(5_000L) {
+            val opened = openPtpIpSession(store, "command", transport)
+            check(opened.txn == transport.transactionId)
+            transport.awaitClockCancellation()
+            val closed = closePtpIpSession(store, "command", transport)
+            check(closed.txn == transport.transactionId && closed.txn > opened.txn)
+            transport.awaitClockCancellation()
+            check(transport.nextFrame == frames.size)
+        }
+    }
+    println("Kotlin PTP/IP session lifecycle binding check passed")
+}
+
+fun main(args: Array<String>) {
     val prefix = inspectBufferedPtpIpFramePrefix(byteArrayOf()) as PtpIpFramePrefix.NeedMore
     val requiredBytes = prefix.requiredBytes.toInt()
     val command = buildCommand(PtpFraming.STANDARD, 0x1001u.toUShort(), 1u, emptyList())
@@ -150,4 +213,5 @@ fun main() {
     val error = runCatching { inspectBufferedPtpIpFramePrefix(invalidPrefix) }.exceptionOrNull()
     check(error is PtpIpFrameLengthException.AboveMaximum && error.declared == UInt.MAX_VALUE)
     println("Kotlin stream frame prefix binding check passed")
+    checkPtpIpSession(File(args.single()))
 }

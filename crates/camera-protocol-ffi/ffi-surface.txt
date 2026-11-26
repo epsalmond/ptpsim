@@ -1603,6 +1603,14 @@ enum PtpIpFramePrefix
   case NeedMore(required_bytes: u32)
   case Ready(total_bytes: u32)
 
+enum PtpIpSessionError error
+  case UnknownConnection(connection: String)
+  case UnsupportedConnection(connection: String)
+  case Codec(error: CodecError)
+  case Transport(error: PtpTransportError)
+  case TransactionMismatch(expected: u32, actual: u32)
+  case Rejected(transaction_id: u32, response_code: u16, response_params: Vec<u32>)
+
 enum PtpPropForm
   case None
   case Range(min: PtpValue, max: PtpValue, step: PtpValue)
@@ -1922,6 +1930,8 @@ fn build_command(framing: PtpFraming, op: u16, txn: u32, params: Vec<u32>) throw
 
 fn build_data(framing: PtpFraming, op: u16, txn: u32, payload: Bytes) throws(CodecError) -> Bytes
 
+fn close_ptp_ip_session(store: ConfigStore, connection: String, transport: PtpExecutorTransport) async throws(PtpIpSessionError) -> ResponseFrame
+
 fn connection_lifecycle_apply_transition(snapshot: ConnectionLifecycleSnapshot, transition: ConnectionLifecycleTransition) throws(ConnectionLifecycleError) -> ConnectionLifecycleTraceEvent
 
 fn connection_lifecycle_initial_snapshot() -> ConnectionLifecycleSnapshot
@@ -1937,6 +1947,8 @@ fn index_model_refs(index_yaml: String) throws(ConfigError) -> Vec<IndexModelRef
 fn inspect_buffered_ptp_ip_frame_prefix(prefix: Bytes) throws(PtpIpFrameLengthError) -> PtpIpFramePrefix
 
 fn normalize_client_name(raw: String) -> String
+
+fn open_ptp_ip_session(store: ConfigStore, connection: String, transport: PtpExecutorTransport) async throws(PtpIpSessionError) -> ResponseFrame
 
 fn pack_af_area(x: f64, y: f64, columns: u32, rows: u32, prior_lock_state: Option<u32>) -> u32
 
