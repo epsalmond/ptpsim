@@ -25,13 +25,13 @@ pub use executor::{
 };
 pub mod ptp_executor;
 pub use ptp_executor::{
-    run_initiator_action, run_initiator_action_to_sink, run_initiator_action_txn,
-    run_initiator_action_txn_to_sink, run_mode_entry, run_mode_entry_txn,
+    close_ptp_ip_session, open_ptp_ip_session, run_initiator_action, run_initiator_action_to_sink,
+    run_initiator_action_txn, run_initiator_action_txn_to_sink, run_mode_entry, run_mode_entry_txn,
     run_mode_reestablishment_exit, run_selected_object_preparation,
     run_selected_object_preparation_txn, PtpCollectionValue, PtpDataOutput, PtpDataOutputSink,
     PtpDataOutputSinkError, PtpExecutionOutcome, PtpExecutorError, PtpExecutorTransport,
-    PtpRuntimeValue, PtpScopeValue, PtpSessionOpenResult, PtpTransactionError, PtpTransactionEvent,
-    PtpTransactionResult, PtpTransactionTransport, PtpTransportError,
+    PtpIpSessionError, PtpRuntimeValue, PtpScopeValue, PtpSessionOpenResult, PtpTransactionError,
+    PtpTransactionEvent, PtpTransactionResult, PtpTransactionTransport, PtpTransportError,
 };
 pub mod pcss_executor;
 pub use pcss_executor::{

@@ -70,6 +70,138 @@ pub trait PtpExecutorTransport: Send + Sync {
     async fn sleep(&self, ms: u32) -> Result<(), PtpTransportError>;
 }
 
+#[derive(Debug, thiserror::Error, uniffi::Error)]
+pub enum PtpIpSessionError {
+    #[error("unknown connection {connection}")]
+    UnknownConnection { connection: String },
+    #[error("{connection} has no initiator-owned PTP/IP command session")]
+    UnsupportedConnection { connection: String },
+    #[error("{error}")]
+    Codec {
+        #[from]
+        error: crate::CodecError,
+    },
+    #[error("{error}")]
+    Transport {
+        #[from]
+        error: PtpTransportError,
+    },
+    #[error("session response transaction {actual} does not match {expected}")]
+    TransactionMismatch { expected: u32, actual: u32 },
+    #[error("session transaction {transaction_id} returned {response_code:#06x}")]
+    Rejected {
+        transaction_id: u32,
+        response_code: u16,
+        response_params: Vec<u32>,
+    },
+}
+
+/// Open a PTP session on an initialized, exclusively held command lane.
+/// Success acknowledges ownership on that lane. The host retains the socket
+/// and uses the same transaction allocator for subsequent operations.
+#[uniffi::export]
+pub async fn open_ptp_ip_session(
+    store: Arc<ConfigStore>,
+    connection: String,
+    transport: Arc<dyn PtpExecutorTransport>,
+) -> Result<crate::ResponseFrame, PtpIpSessionError> {
+    // Use the native initiator's default nonzero session ID.
+    issue_ptp_ip_session_command(
+        &store,
+        &connection,
+        transport.as_ref(),
+        op::OPEN_SESSION,
+        vec![1],
+    )
+    .await
+}
+
+/// Close an owned PTP session using the same command lane and transaction
+/// allocator. The host remains responsible for the command socket lifetime.
+#[uniffi::export]
+pub async fn close_ptp_ip_session(
+    store: Arc<ConfigStore>,
+    connection: String,
+    transport: Arc<dyn PtpExecutorTransport>,
+) -> Result<crate::ResponseFrame, PtpIpSessionError> {
+    issue_ptp_ip_session_command(
+        &store,
+        &connection,
+        transport.as_ref(),
+        op::CLOSE_SESSION,
+        vec![],
+    )
+    .await
+}
+
+async fn issue_ptp_ip_session_command(
+    store: &ConfigStore,
+    connection: &str,
+    transport: &dyn PtpExecutorTransport,
+    operation: u16,
+    params: Vec<u32>,
+) -> Result<crate::ResponseFrame, PtpIpSessionError> {
+    let config = store
+        .inner
+        .manifest
+        .connections
+        .get(connection)
+        .ok_or_else(|| PtpIpSessionError::UnknownConnection {
+            connection: connection.into(),
+        })?;
+    let ownership = config.session.map(|session| session.ownership);
+    let framing = match config.command_framing {
+        Some(framing @ (cc::WireFraming::Standard | cc::WireFraming::Compressed))
+            if ownership != Some(cc::SessionOwnership::DaemonAttached) =>
+        {
+            framing.into()
+        }
+        _ => {
+            return Err(PtpIpSessionError::UnsupportedConnection {
+                connection: connection.into(),
+            })
+        }
+    };
+
+    let transaction = async move {
+        let transaction_id = transport.reserve_transaction_id().await?;
+        let command = crate::build_command(framing, operation, transaction_id, params)?;
+        transport.send_command_frame(command).await?;
+        let response = crate::parse_response(framing, transport.next_command_frame().await?)?;
+        if response.txn != transaction_id {
+            return Err(PtpIpSessionError::TransactionMismatch {
+                expected: transaction_id,
+                actual: response.txn,
+            });
+        }
+        if response.response_code != resp::OK {
+            return Err(PtpIpSessionError::Rejected {
+                transaction_id,
+                response_code: response.response_code,
+                response_params: response.params,
+            });
+        }
+        Ok(response)
+    };
+    match select(
+        Box::pin(transaction),
+        transport.sleep(DEFAULT_OP_TIMEOUT_MS),
+    )
+    .await
+    {
+        Either::Left((response, _)) => response,
+        Either::Right((clock, _)) => {
+            clock?;
+            Err(PtpTransportError::Timeout {
+                detail: format!(
+                    "session transaction deadline exceeded after {DEFAULT_OP_TIMEOUT_MS}ms"
+                ),
+            }
+            .into())
+        }
+    }
+}
+
 /// Failure surface a transaction transport implementation may raise (§11.29):
 /// the `UsbTransportError` vocabulary minus the claim/open variants the
 /// daemon owns. `Timeout` classifies as a deadline to the executor; every

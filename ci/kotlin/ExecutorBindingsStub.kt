@@ -18,13 +18,19 @@ import dev.ptpsim.cameraprotocol.PtpIpFrameLengthException
 import dev.ptpsim.cameraprotocol.PtpIpFramePrefix
 import dev.ptpsim.cameraprotocol.PtpFraming
 import dev.ptpsim.cameraprotocol.buildCommand
+import dev.ptpsim.cameraprotocol.closePtpIpSession
 import dev.ptpsim.cameraprotocol.inspectBufferedPtpIpFramePrefix
+import dev.ptpsim.cameraprotocol.openPtpIpSession
 import dev.ptpsim.cameraprotocol.PtpExecutorTransport
 import dev.ptpsim.cameraprotocol.PtpSessionOpenResult
 import dev.ptpsim.cameraprotocol.SocketRole
 import dev.ptpsim.cameraprotocol.Step
 import dev.ptpsim.cameraprotocol.StepObserver
 import dev.ptpsim.cameraprotocol.StepReport
+import java.io.File
+import java.util.HexFormat
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.runBlocking
 
 fun fallbackModelBindingShape(store: ConfigStore, model: String): String {
     val fallback: Boolean? = store.isFallbackModel(model)
@@ -139,7 +145,44 @@ fun retryBindingShape(): Step = Step.Retry(
     failureContext = listOf("detail"),
 )
 
-fun main() {
+private class SessionTransport(private val frames: List<ByteArray>) : PtpExecutorTransport {
+    var transactionId = 0u
+        private set
+    var nextFrame = 0
+        private set
+
+    override suspend fun reserveTransactionId(): UInt = ++transactionId
+    override suspend fun sendCommandFrame(frame: ByteArray) {
+        check(frames[nextFrame++].contentEquals(frame))
+    }
+    override suspend fun nextCommandFrame(): ByteArray = frames[nextFrame++]
+    override suspend fun nextEventFrame(eventCode: UShort): ByteArray = error("unexpected event read")
+    override suspend fun openChannel(role: SocketRole) = error("unexpected channel open")
+    override suspend fun closeCommandChannel(transportCloseFrame: ByteArray?) =
+        error("unexpected socket close")
+    override suspend fun reopenCommandSession(): PtpSessionOpenResult = error("unexpected reopen")
+    override suspend fun sleep(ms: UInt): Unit = awaitCancellation()
+}
+
+private fun checkPtpIpSession(root: File) = runBlocking {
+    val packetFixture = root.resolve("ci/kotlin/pcss-session-frames.txt")
+    val frames = packetFixture.readLines()
+        .filter { it.isNotBlank() && !it.startsWith("#") }
+        .map(HexFormat.of()::parseHex)
+    val transport = SessionTransport(frames)
+    val manifest = root.resolve("packages/camera-config-data/fuji/gfx100ii/gfx100ii.yaml")
+    val manufacturer = root.resolve("packages/camera-config-data/fuji/fuji.yaml")
+    ConfigStore.fromBundle(manifest.readText(), manufacturer.readText()).use { store ->
+        val opened = openPtpIpSession(store, "wireless-tether", transport)
+        check(opened.txn == transport.transactionId)
+        val closed = closePtpIpSession(store, "wireless-tether", transport)
+        check(closed.txn == transport.transactionId && closed.txn > opened.txn)
+        check(transport.nextFrame == frames.size)
+    }
+    println("Kotlin PTP/IP session lifecycle binding check passed")
+}
+
+fun main(args: Array<String>) {
     val prefix = inspectBufferedPtpIpFramePrefix(byteArrayOf()) as PtpIpFramePrefix.NeedMore
     val requiredBytes = prefix.requiredBytes.toInt()
     val command = buildCommand(PtpFraming.STANDARD, 0x1001u.toUShort(), 1u, emptyList())
@@ -150,4 +193,5 @@ fun main() {
     val error = runCatching { inspectBufferedPtpIpFramePrefix(invalidPrefix) }.exceptionOrNull()
     check(error is PtpIpFrameLengthException.AboveMaximum && error.declared == UInt.MAX_VALUE)
     println("Kotlin stream frame prefix binding check passed")
+    checkPtpIpSession(File(args.single()))
 }

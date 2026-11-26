@@ -216,7 +216,7 @@ if [[ "${KOTLIN_BINDINGS_CHECK_ONLY}" == 1 ]]; then
     kotlinc "${KOTLIN_FILE}" "${STUB}" -classpath "${KOTLINC_CP}" -include-runtime -d "${CHECK_JAR}"
     test -f "${CHECK_JAR}" || { echo "FATAL: kotlinc did not produce ${CHECK_JAR}" >&2; exit 1; }
     java "-Djna.library.path=${HOST_LIB%/*}" -classpath "${CHECK_JAR}:${KOTLINC_CP}" \
-        ptpsim.ci.ExecutorBindingsStubKt
+        ptpsim.ci.ExecutorBindingsStubKt "${ROOT}"
     echo "Kotlin executor binding check complete: ${CHECK_JAR}"
     exit 0
 fi

@@ -1,0 +1,6 @@
+# Compact command frames after InitCommandAck on the GFX100 II wireless-tether connection.
+# OpenSession request and response, then CloseSession request and response.
+10000000010002100100000001000000
+0c0000000300012001000000
+0c0000000100031002000000
+0c0000000300012002000000

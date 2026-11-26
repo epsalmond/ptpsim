@@ -11,15 +11,16 @@ use std::task::{Context, Poll};
 use camera_config::CameraManifest;
 use camera_media_store::{MediaStore, ObjectQuery};
 use camera_protocol_ffi::{
-    parse_action_verb, run_initiator_action as execute_initiator_action,
+    close_ptp_ip_session, open_ptp_ip_session, parse_action_verb,
+    run_initiator_action as execute_initiator_action,
     run_initiator_action_to_sink as execute_initiator_action_to_sink, run_mode_entry,
     run_mode_reestablishment_exit, run_selected_object_preparation, ActionArgument,
     ActionInvocationRequest, ActionRole, ActionValue, ActionVerb, ConfigStore,
     ConnectionActivityEvent, ConnectionActivityFailure, ConnectionActivityObserver,
     ConnectionActivityRetry, ConnectionActivityTerminalSummary, ExecutorStepFailureKind,
     PtpDataOutput, PtpDataOutputSink, PtpDataOutputSinkError, PtpExecutionOutcome,
-    PtpExecutorError, PtpExecutorTransport, PtpFraming, PtpRuntimeValue, PtpSessionOpenResult,
-    PtpTransportError, SocketRole, StepObserver, StepOutcome, StepReport,
+    PtpExecutorError, PtpExecutorTransport, PtpFraming, PtpIpSessionError, PtpRuntimeValue,
+    PtpSessionOpenResult, PtpTransportError, SocketRole, StepObserver, StepOutcome, StepReport,
 };
 use camera_sim::{Engine, FaultMutation, FaultSelector, FaultSpec, FaultStage, Reply};
 use futures::executor::block_on;
@@ -2838,6 +2839,166 @@ fn dropping_a_pending_walk_cancels_the_active_activity_once() {
     ));
 }
 
+#[test]
+fn ptp_ip_session_uses_manifest_framing_and_live_transaction_sequence() {
+    use ptp_core::codes::{op, resp};
+
+    for (connection, store, framing) in [
+        (
+            "app",
+            store_with_standard_app_framing(),
+            PtpFraming::Standard,
+        ),
+        ("wireless-tether", store(), PtpFraming::Compressed),
+    ] {
+        let transport = Arc::new(EngineTransport::new(connection, framing, framing));
+        {
+            let mut state = transport.state.lock().unwrap();
+            state.engine.clear_session_after_transport_end();
+            state.next_tid = 1;
+        }
+
+        let opened = block_on(open_ptp_ip_session(
+            store.clone(),
+            connection.into(),
+            transport.clone(),
+        ))
+        .expect("OpenSession");
+        let closed = block_on(close_ptp_ip_session(
+            store,
+            connection.into(),
+            transport.clone(),
+        ))
+        .expect("CloseSession");
+
+        assert_eq!((opened.txn, opened.response_code), (1, resp::OK));
+        assert_eq!((closed.txn, closed.response_code), (2, resp::OK));
+        assert_eq!(
+            transport.operations(),
+            vec![op::OPEN_SESSION, op::CLOSE_SESSION]
+        );
+        assert_eq!(transport.request_count(op::OPEN_SESSION, &[1]), 1);
+        assert_eq!(transport.request_count(op::CLOSE_SESSION, &[]), 1);
+        assert_eq!(transport.queued_reply_count(), 0);
+        assert_eq!(transport.close_calls(), 0);
+        assert_eq!(transport.reopen_calls(), 0);
+        assert!(transport.opened_channels().is_empty());
+    }
+}
+
+#[test]
+fn ptp_ip_session_rejects_an_existing_session_without_recovery() {
+    use ptp_core::codes::{op, resp};
+
+    let transport = Arc::new(EngineTransport::new(
+        "wireless-tether",
+        PtpFraming::Compressed,
+        PtpFraming::Compressed,
+    ));
+    let error = block_on(open_ptp_ip_session(
+        store(),
+        "wireless-tether".into(),
+        transport.clone(),
+    ))
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        PtpIpSessionError::Rejected {
+            transaction_id: 2,
+            response_code: resp::SESSION_ALREADY_OPEN,
+            ..
+        }
+    ));
+    assert_eq!(transport.operations(), vec![op::OPEN_SESSION]);
+    assert_eq!(transport.close_calls(), 0);
+    assert_eq!(transport.reopen_calls(), 0);
+}
+
+#[test]
+fn ptp_ip_session_rejects_a_response_for_another_transaction() {
+    let transport = Arc::new(EngineTransport::new(
+        "wireless-tether",
+        PtpFraming::Compressed,
+        PtpFraming::Compressed,
+    ));
+    let stale = PtpIpPacket::OperationResponse(ptp_core::OperationResponse {
+        code: ptp_core::codes::resp::OK,
+        transaction_id: 1,
+        params: vec![],
+    });
+    transport
+        .state
+        .lock()
+        .unwrap()
+        .replies
+        .push_back(transport.encode(&stale).unwrap());
+    let error = block_on(close_ptp_ip_session(
+        store(),
+        "wireless-tether".into(),
+        transport.clone(),
+    ))
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        PtpIpSessionError::TransactionMismatch {
+            expected: 2,
+            actual: 1,
+        }
+    ));
+    assert_eq!(transport.queued_reply_count(), 1);
+}
+
+#[test]
+fn ptp_ip_session_deadline_drops_the_pending_command_read() {
+    let dropped = Arc::new(AtomicBool::new(false));
+    let error = block_on(open_ptp_ip_session(
+        store(),
+        "wireless-tether".into(),
+        Arc::new(WholeStepDeadlineTransport {
+            deadline_ms: 10_000,
+            pending_read_dropped: dropped.clone(),
+        }),
+    ))
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        PtpIpSessionError::Transport {
+            error: PtpTransportError::Timeout { .. },
+        }
+    ));
+    assert!(dropped.load(Ordering::SeqCst));
+}
+
+#[test]
+fn ptp_ip_session_rejects_incompatible_manifest_connections_before_io() {
+    let transport = Arc::new(TripwireExecutorTransport::default());
+    let store = store();
+    let unknown = block_on(open_ptp_ip_session(
+        store.clone(),
+        "missing".into(),
+        transport.clone(),
+    ));
+    assert!(matches!(
+        unknown,
+        Err(PtpIpSessionError::UnknownConnection { .. })
+    ));
+    for connection in ["usb", "usb-passthrough"] {
+        let unsupported = block_on(close_ptp_ip_session(
+            store.clone(),
+            connection.into(),
+            transport.clone(),
+        ));
+        assert!(matches!(
+            unsupported,
+            Err(PtpIpSessionError::UnsupportedConnection { .. })
+        ));
+    }
+    assert_eq!(transport.touches(), 0);
+}
+
 enum FailureMode {
     Transport,
     Deadline,
@@ -2848,6 +3009,7 @@ struct FailingTransport(FailureMode);
 struct PendingTransport;
 
 struct WholeStepDeadlineTransport {
+    deadline_ms: u32,
     pending_read_dropped: Arc<AtomicBool>,
 }
 
@@ -2887,7 +3049,7 @@ impl PtpExecutorTransport for WholeStepDeadlineTransport {
         unreachable!()
     }
     async fn sleep(&self, ms: u32) -> Result<(), PtpTransportError> {
-        if ms == 60_000 {
+        if ms == self.deadline_ms {
             Ok(())
         } else {
             futures::future::pending().await
@@ -3010,6 +3172,7 @@ fn aggregate_step_deadline_cancels_the_pending_foreign_read() {
         None,
         "shooting/stills".into(),
         Arc::new(WholeStepDeadlineTransport {
+            deadline_ms: 60_000,
             pending_read_dropped: dropped.clone(),
         }),
         Arc::new(Reports::default()),
