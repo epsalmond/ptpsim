@@ -712,9 +712,10 @@ lane before ordinary transactions. Rust uses the manifest's command framing and
 the native initiator's default session ID. Use the same lane and transaction
 allocator for actions and `close_ptp_ip_session`. Each call reserves one
 transaction ID and returns only after checking a matching OK response. The
-host owns the socket, and should only request close after acquiring session
-ownership. A peer that reports an already open session returns a typed
-`Rejected` error.
+host owns the socket and may send close after acquiring session ownership.
+`SessionAlreadyOpen` is a typed `Rejected` result. Retire the unowned command
+socket and leave the current session with its owner. A fresh connection may
+try again after that owner releases the session.
 
 Both calls use the host clock for a 10-second transaction deadline. Keep the
 command lane exclusive for each call and make the callbacks cancellation-safe.

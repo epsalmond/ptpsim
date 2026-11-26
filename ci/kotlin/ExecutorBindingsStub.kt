@@ -30,7 +30,9 @@ import dev.ptpsim.cameraprotocol.StepReport
 import java.io.File
 import java.util.HexFormat
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 
 fun fallbackModelBindingShape(store: ConfigStore, model: String): String {
     val fallback: Boolean? = store.isFallbackModel(model)
@@ -146,6 +148,9 @@ fun retryBindingShape(): Step = Step.Retry(
 )
 
 private class SessionTransport(private val frames: List<ByteArray>) : PtpExecutorTransport {
+    private val clockStarted = Channel<Unit>(1)
+    private val clockCancelled = Channel<Unit>(1)
+
     var transactionId = 0u
         private set
     var nextFrame = 0
@@ -155,29 +160,44 @@ private class SessionTransport(private val frames: List<ByteArray>) : PtpExecuto
     override suspend fun sendCommandFrame(frame: ByteArray) {
         check(frames[nextFrame++].contentEquals(frame))
     }
-    override suspend fun nextCommandFrame(): ByteArray = frames[nextFrame++]
+    override suspend fun nextCommandFrame(): ByteArray {
+        clockStarted.receive()
+        return frames[nextFrame++]
+    }
     override suspend fun nextEventFrame(eventCode: UShort): ByteArray = error("unexpected event read")
     override suspend fun openChannel(role: SocketRole) = error("unexpected channel open")
     override suspend fun closeCommandChannel(transportCloseFrame: ByteArray?) =
         error("unexpected socket close")
     override suspend fun reopenCommandSession(): PtpSessionOpenResult = error("unexpected reopen")
-    override suspend fun sleep(ms: UInt): Unit = awaitCancellation()
+    override suspend fun sleep(ms: UInt) {
+        try {
+            clockStarted.send(Unit)
+            awaitCancellation()
+        } finally {
+            clockCancelled.trySend(Unit).getOrThrow()
+        }
+    }
+
+    suspend fun awaitClockCancellation() = clockCancelled.receive()
 }
 
 private fun checkPtpIpSession(root: File) = runBlocking {
-    val packetFixture = root.resolve("ci/kotlin/pcss-session-frames.txt")
-    val frames = packetFixture.readLines()
+    val fixtures = root.resolve("ci/kotlin")
+    val frames = fixtures.resolve("compact-session-frames.txt").readLines()
         .filter { it.isNotBlank() && !it.startsWith("#") }
         .map(HexFormat.of()::parseHex)
     val transport = SessionTransport(frames)
-    val manifest = root.resolve("packages/camera-config-data/fuji/gfx100ii/gfx100ii.yaml")
-    val manufacturer = root.resolve("packages/camera-config-data/fuji/fuji.yaml")
-    ConfigStore.fromBundle(manifest.readText(), manufacturer.readText()).use { store ->
-        val opened = openPtpIpSession(store, "wireless-tether", transport)
-        check(opened.txn == transport.transactionId)
-        val closed = closePtpIpSession(store, "wireless-tether", transport)
-        check(closed.txn == transport.transactionId && closed.txn > opened.txn)
-        check(transport.nextFrame == frames.size)
+    val manifest = fixtures.resolve("session-fixture.yaml").readText()
+    ConfigStore.fromBundle(manifest, null).use { store ->
+        withTimeout(5_000L) {
+            val opened = openPtpIpSession(store, "command", transport)
+            check(opened.txn == transport.transactionId)
+            transport.awaitClockCancellation()
+            val closed = closePtpIpSession(store, "command", transport)
+            check(closed.txn == transport.transactionId && closed.txn > opened.txn)
+            transport.awaitClockCancellation()
+            check(transport.nextFrame == frames.size)
+        }
     }
     println("Kotlin PTP/IP session lifecycle binding check passed")
 }

@@ -99,6 +99,8 @@ pub enum PtpIpSessionError {
 /// Open a PTP session on an initialized, exclusively held command lane.
 /// Success acknowledges ownership on that lane. The host retains the socket
 /// and uses the same transaction allocator for subsequent operations.
+/// On a peer's SessionAlreadyOpen response, discard the unowned socket.
+/// A fresh connection may try again once the existing owner releases its session.
 #[uniffi::export]
 pub async fn open_ptp_ip_session(
     store: Arc<ConfigStore>,
