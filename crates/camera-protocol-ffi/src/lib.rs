@@ -305,8 +305,9 @@ pub enum PtpIpFrameLengthError {
 /// Admit one buffered PTP/IP TCP frame using its common length prefix.
 /// The prefix and the returned total count both start at the frame boundary.
 /// Packet layout is validated separately by the complete-frame codec.
+/// Use the streaming executor for data frames exceeding the buffered cap.
 #[uniffi::export]
-pub fn inspect_ptp_ip_frame_prefix(
+pub fn inspect_buffered_ptp_ip_frame_prefix(
     prefix: Vec<u8>,
 ) -> Result<PtpIpFramePrefix, PtpIpFrameLengthError> {
     use ptp_core::error::FrameLengthError;

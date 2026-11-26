@@ -36,13 +36,13 @@ fn stream_frame_prefix_accepts_only_bounded_wire_lengths() {
     const MAX: u32 = 16 * 1024 * 1024;
     for partial_length in 0..4 {
         assert_eq!(
-            inspect_ptp_ip_frame_prefix(vec![0; partial_length]).unwrap(),
+            inspect_buffered_ptp_ip_frame_prefix(vec![0; partial_length]).unwrap(),
             PtpIpFramePrefix::NeedMore { required_bytes: 4 }
         );
     }
     for declared in [8u32, 68, MAX] {
         assert_eq!(
-            inspect_ptp_ip_frame_prefix(declared.to_le_bytes().to_vec()).unwrap(),
+            inspect_buffered_ptp_ip_frame_prefix(declared.to_le_bytes().to_vec()).unwrap(),
             PtpIpFramePrefix::Ready {
                 total_bytes: declared
             }
@@ -50,22 +50,33 @@ fn stream_frame_prefix_accepts_only_bounded_wire_lengths() {
     }
     for declared in 0u32..8 {
         assert_eq!(
-            inspect_ptp_ip_frame_prefix(declared.to_le_bytes().to_vec()).unwrap_err(),
+            inspect_buffered_ptp_ip_frame_prefix(declared.to_le_bytes().to_vec()).unwrap_err(),
             PtpIpFrameLengthError::BelowMinimum {
                 declared,
                 minimum: 8
             }
         );
     }
-    for declared in [MAX + 1, u32::MAX] {
-        assert_eq!(
-            inspect_ptp_ip_frame_prefix(declared.to_le_bytes().to_vec()).unwrap_err(),
-            PtpIpFrameLengthError::AboveMaximum {
-                declared,
-                maximum: MAX
-            }
-        );
-    }
+    const COMPRESSED_HEADER_BYTES: u32 = 12;
+    let oversized_data_header = protocol_primitives::fuji_framing::data_frame_header(
+        0x1009,
+        1,
+        MAX + 1 - COMPRESSED_HEADER_BYTES,
+    );
+    assert_eq!(
+        inspect_buffered_ptp_ip_frame_prefix(oversized_data_header.to_vec()).unwrap_err(),
+        PtpIpFrameLengthError::AboveMaximum {
+            declared: MAX + 1,
+            maximum: MAX,
+        }
+    );
+    assert_eq!(
+        inspect_buffered_ptp_ip_frame_prefix(u32::MAX.to_le_bytes().to_vec()).unwrap_err(),
+        PtpIpFrameLengthError::AboveMaximum {
+            declared: u32::MAX,
+            maximum: MAX,
+        }
+    );
 }
 
 #[test]
@@ -77,13 +88,13 @@ fn stream_frame_prefix_returns_first_wire_frame_size() {
     .unwrap();
     let joined = [first.as_slice(), following.as_slice()].concat();
     assert_eq!(
-        inspect_ptp_ip_frame_prefix(joined).unwrap(),
+        inspect_buffered_ptp_ip_frame_prefix(joined).unwrap(),
         PtpIpFramePrefix::Ready {
             total_bytes: first.len() as u32
         }
     );
     assert_eq!(
-        inspect_ptp_ip_frame_prefix(following).unwrap(),
+        inspect_buffered_ptp_ip_frame_prefix(following).unwrap(),
         PtpIpFramePrefix::Ready { total_bytes: 8 }
     );
 }

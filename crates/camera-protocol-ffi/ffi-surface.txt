@@ -1934,7 +1934,7 @@ fn encode_value(value: i64, width: ValueWidth) throws(CodecError) -> Bytes
 
 fn index_model_refs(index_yaml: String) throws(ConfigError) -> Vec<IndexModelRef>
 
-fn inspect_ptp_ip_frame_prefix(prefix: Bytes) throws(PtpIpFrameLengthError) -> PtpIpFramePrefix
+fn inspect_buffered_ptp_ip_frame_prefix(prefix: Bytes) throws(PtpIpFrameLengthError) -> PtpIpFramePrefix
 
 fn normalize_client_name(raw: String) -> String
 
